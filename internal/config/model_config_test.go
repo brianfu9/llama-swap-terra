@@ -320,6 +320,27 @@ models:
 		assert.True(t, mc.Capabilities.Reranker)
 	})
 
+	t.Run("video fields", func(t *testing.T) {
+		content := `
+models:
+  model1:
+    cmd: path/to/cmd --port ${PORT}
+    capabilities:
+      in:
+        - text
+        - video
+      out:
+        - video
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+
+		mc := config.Models["model1"]
+		assert.False(t, mc.Capabilities.Empty())
+		assert.Equal(t, []string{"text", "video"}, mc.Capabilities.In)
+		assert.Equal(t, []string{"video"}, mc.Capabilities.Out)
+	})
+
 	t.Run("reranker false is empty", func(t *testing.T) {
 		content := `
 models:

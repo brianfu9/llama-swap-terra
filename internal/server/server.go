@@ -176,6 +176,8 @@ var modelPostJSONRoutes = []string{
 var modelPostFormRoutes = []string{
 	"/v1/audio/transcriptions",
 	"/v1/images/edits",
+	"/v1/videos",
+	"/v1/videos/sync",
 }
 
 // modelGetRoutes are model-dispatched GET endpoints (the model arrives as a
@@ -188,6 +190,18 @@ var modelGetRoutes = []string{
 	// websocket upgrade, OpenAI Realtime API style (?model=..., or the
 	// model named by the first session.update event)
 	"/v1/realtime",
+
+	// terra fork (PR #991): video job status and content
+	"/v1/videos",
+	"/v1/videos/{video_id}",
+	"/v1/videos/{video_id}/content",
+}
+
+// modelDeleteRoutes are model-dispatched DELETE endpoints. Like modelGetRoutes,
+// the model arrives as a query parameter since the resource id alone (e.g. a
+// video job id) doesn't identify which backend created it.
+var modelDeleteRoutes = []string{
+	"/v1/videos/{video_id}",
 }
 
 // meteredRoutes maps every endpoint the metrics middleware records to the
@@ -218,6 +232,11 @@ var meteredRoutes = map[string]hint.Task{
 
 	"/v1/audio/speech":         hint.TaskSpeech,
 	"/v1/audio/transcriptions": hint.TaskTranscription,
+
+	// terra fork (PR #991): a video generation request (the POST that
+	// starts the job, or the synchronous form)
+	"/v1/videos":      hint.TaskVideoGeneration,
+	"/v1/videos/sync": hint.TaskVideoGeneration,
 
 	"/v1/systemone":          hint.TaskDecision,
 	"/audioapi/v1/tasks/run": hint.TaskAudio,
@@ -446,6 +465,9 @@ func (s *Server) routes() {
 			h = modelChain.ThenFunc(s.handleProps)
 		}
 		mux.Handle("GET "+path, h)
+	}
+	for _, path := range modelDeleteRoutes {
+		mux.Handle("DELETE "+path, modelChain.Then(dispatch))
 	}
 
 	// llama-swap API + custom endpoints.

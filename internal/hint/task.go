@@ -16,5 +16,6 @@ const (
 	TaskTranscription   Task = "transcription"
 	TaskDecision        Task = "decision"
 	TaskAudio           Task = "audio"
-	TaskRealtime        Task = "realtime" // a /v1/realtime websocket session
+	TaskRealtime        Task = "realtime"         // a /v1/realtime websocket session
+	TaskVideoGeneration Task = "video_generation" // terra fork: /v1/videos (PR #991)
 )

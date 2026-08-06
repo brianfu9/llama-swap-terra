@@ -64,6 +64,9 @@ func renderCapabilities(caps config.ModelCapConfig) (arch map[string]any, capsMa
 		if contains(caps.In, "image") {
 			capsMap["vision"] = true
 		}
+		if contains(caps.In, "video") {
+			capsMap["video_understanding"] = true
+		}
 	}
 	if hasOut && contains(caps.Out, "decisions") {
 		capsMap["decisions"] = true
@@ -80,6 +83,15 @@ func renderCapabilities(caps config.ModelCapConfig) (arch map[string]any, capsMa
 		}
 		if contains(caps.In, "image") && contains(caps.Out, "image") {
 			capsMap["image_to_image"] = true
+		}
+		if contains(caps.In, "text") && contains(caps.Out, "video") {
+			capsMap["video_generation"] = true
+		}
+		if contains(caps.In, "image") && contains(caps.Out, "video") {
+			capsMap["image_to_video"] = true
+		}
+		if contains(caps.In, "video") && contains(caps.Out, "video") {
+			capsMap["video_to_video"] = true
 		}
 	}
 

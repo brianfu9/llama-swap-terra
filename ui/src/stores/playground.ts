@@ -1,7 +1,7 @@
 import { get } from "svelte/store";
 import { persistentStore } from "./persistent";
 
-export type PlaygroundTab = "chat" | "images" | "speech" | "audio" | "realtime" | "rerank" | "concurrency";
+export type PlaygroundTab = "chat" | "images" | "speech" | "audio" | "realtime" | "video" | "rerank" | "concurrency";
 
 export const playgroundTabs: { id: PlaygroundTab; label: string }[] = [
   { id: "chat", label: "Chat" },
@@ -9,6 +9,7 @@ export const playgroundTabs: { id: PlaygroundTab; label: string }[] = [
   { id: "speech", label: "Speech" },
   { id: "audio", label: "Transcription" },
   { id: "realtime", label: "Realtime" },
+  { id: "video", label: "Video" },
   { id: "rerank", label: "Rerank" },
   { id: "concurrency", label: "Load Test" },
 ];

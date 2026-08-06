@@ -6,6 +6,7 @@ const speechGenerating = writable(false);
 const audioTranscribing = writable(false);
 const realtimeConnected = writable(false);
 const rerankLoading = writable(false);
+const videoGenerating = writable(false);
 
 /**
  * The Docs Agent's flag. It is not part of playgroundActivity: Help is its own
@@ -14,8 +15,8 @@ const rerankLoading = writable(false);
 export const docsAgentStreaming = writable(false);
 
 export const playgroundActivity = derived(
-  [chatStreaming, imageGenerating, speechGenerating, audioTranscribing, realtimeConnected, rerankLoading],
-  ([$chat, $image, $speech, $audio, $realtime, $rerank]) => $chat || $image || $speech || $audio || $realtime || $rerank
+  [chatStreaming, imageGenerating, speechGenerating, audioTranscribing, realtimeConnected, rerankLoading, videoGenerating],
+  ([$chat, $image, $speech, $audio, $realtime, $rerank, $video]) => $chat || $image || $speech || $audio || $realtime || $rerank || $video
 );
 
 export const playgroundStores = {
@@ -25,4 +26,5 @@ export const playgroundStores = {
   audioTranscribing,
   realtimeConnected,
   rerankLoading,
+  videoGenerating,
 };
