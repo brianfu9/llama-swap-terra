@@ -472,6 +472,12 @@ func isModelDispatchedRequest(method, path string) bool {
 				return true
 			}
 		}
+	case http.MethodDelete:
+		for _, p := range modelDeleteRoutes {
+			if p == path {
+				return true
+			}
+		}
 	}
 	return false
 }
