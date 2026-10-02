@@ -17,6 +17,8 @@
     "activity-filters",
     emptyActivityFilters()
   );
+  // Model the stats card describes ("" = all models). Independent of the table filters.
+  const storedStatsModel = persistentStore<string>("activity-stats-model", "");
 
   let rows = $state<ActivityLogEntry[]>([]);
   let stats = $state<ActivityStatsData | null>(null);
@@ -28,6 +30,8 @@
   let totalPages = $state(0);
   // svelte-ignore state_referenced_locally
   let filters = $state<ActivityFilters>(normalizeActivityFilters($storedFilters));
+  // svelte-ignore state_referenced_locally
+  let statsModel = $state($storedStatsModel);
   let requestID = 0;
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   let lastRefresh = 0;
@@ -42,9 +46,8 @@
     try {
       const [activity, activityStats] = await Promise.all([
         getActivity({ page, limit, sort, order, filters }),
-        // Stats stay unfiltered: the cards describe all recorded activity, not
-        // the current table view.
-        getActivityStats(),
+        // Stats follow only their own model selector, never the table's filters.
+        getActivityStats(statsModel || undefined),
       ]);
       if (id !== requestID) return;
       rows = activity.data;
@@ -72,6 +75,11 @@
     page = 1;
   }
 
+  function setStatsModel(nextModel: string) {
+    statsModel = nextModel;
+    storedStatsModel.set(nextModel);
+  }
+
   function setFilters(nextFilters: ActivityFilters) {
     filters = nextFilters;
     page = 1;
@@ -97,6 +105,7 @@
     sort;
     order;
     filters;
+    statsModel;
     untrack(() => {
       refreshActivity();
     });
@@ -125,7 +134,7 @@
 
 <div class="p-2">
   <div class="mt-4 mb-4">
-    <ActivityStats {stats} />
+    <ActivityStats {stats} {statsModel} onStatsModelChange={setStatsModel} />
   </div>
 
   <ActivityTable

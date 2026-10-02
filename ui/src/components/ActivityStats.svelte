@@ -9,12 +9,28 @@
   import { ChevronDown, X } from "@lucide/svelte";
   import * as Card from "$lib/components/ui/card/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
+  import * as Select from "$lib/components/ui/select/index.js";
 
   interface Props {
     stats: ActivityStatsData | null;
+    /** Model the stats describe; "" means all models. */
+    statsModel: string;
+    onStatsModelChange: (model: string) => void;
   }
 
-  let { stats }: Props = $props();
+  let { stats, statsModel, onStatsModelChange }: Props = $props();
+
+  // bits-ui Select needs a non-empty value for the "all" option.
+  const ALL_MODELS = "__all__";
+  // Keep a stored selection visible even if that model has no rows (pruned or
+  // renamed), so the control never shows a value missing from its own list.
+  const modelOptions = $derived.by(() => {
+    const list = stats?.models ?? [];
+    if (statsModel && !list.some((m) => m.id === statsModel)) {
+      return [...list, { id: statsModel, requests: 0 }];
+    }
+    return list;
+  });
 
   const nf = new Intl.NumberFormat();
   const histogramCollapsed = persistentStore<boolean>("activity-histogram-collapsed", false);
@@ -44,6 +60,30 @@
       <X />
     {/if}
   </Button>
+  <!-- pr-36 keeps the selector clear of the absolutely positioned buttons top-right. -->
+  <div class="mb-3 flex items-center gap-2 pr-36">
+    <span class="text-muted-foreground text-xs">Model</span>
+    <Select.Root
+      type="single"
+      value={statsModel || ALL_MODELS}
+      onValueChange={(value) => onStatsModelChange(value === ALL_MODELS ? "" : value)}
+    >
+      <Select.Trigger size="sm" class="h-8 min-w-0 max-w-[18rem] text-xs" title="Model the stats below describe">
+        <span class="truncate">{statsModel || "All models"}</span>
+      </Select.Trigger>
+      <Select.Content>
+        <Select.Item value={ALL_MODELS} label="All models">All models</Select.Item>
+        {#each modelOptions as option (option.id)}
+          <Select.Item value={option.id} label={option.id}>
+            {option.id}
+            <span class="text-muted-foreground ml-auto pl-3 tabular-nums" title={nf.format(option.requests)}>
+              {formatCompact(option.requests)}
+            </span>
+          </Select.Item>
+        {/each}
+      </Select.Content>
+    </Select.Root>
+  </div>
   {#if !$histogramCollapsed}
     <div class="mb-3 flex flex-col gap-6 sm:flex-row">
       <div class="w-full min-w-0 sm:w-1/2">

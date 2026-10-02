@@ -450,8 +450,11 @@ func TestStore_PruneActivity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("model ActivityStats: %v", err)
 	}
-	if modelStats.TotalRequests != 5 {
-		t.Fatalf("model total requests after prune = %d, want 5", modelStats.TotalRequests)
+	// terra fork: a model-filtered total is COUNT(*) of retained rows, because
+	// MAX(id) is not a per-model count once several models share the table
+	// (the stats card's model selector). Only in-memory stores are pruned.
+	if modelStats.TotalRequests != 2 {
+		t.Fatalf("model total requests after prune = %d, want 2 (retained rows)", modelStats.TotalRequests)
 	}
 }
 
@@ -505,5 +508,50 @@ func TestStore_NewFileUsesWAL(t *testing.T) {
 	}
 	if mode != "wal" {
 		t.Fatalf("journal_mode = %q, want wal", mode)
+	}
+}
+
+func TestStore_ActivityStatsModels(t *testing.T) {
+	ctx := context.Background()
+	st, err := New("")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer st.Close()
+
+	empty, err := st.Activity().Stats(ctx, store.ActivityStatsQuery{})
+	if err != nil {
+		t.Fatalf("ActivityStats on empty store: %v", err)
+	}
+	if empty.Models == nil || len(empty.Models) != 0 {
+		t.Fatalf("empty store Models = %#v, want non-nil empty slice", empty.Models)
+	}
+
+	for i, model := range []string{"m1", "m2", "m1"} {
+		if _, err := st.Activity().Insert(ctx, store.ActivityLogEntry{
+			Timestamp: time.Unix(int64(i+1), 0),
+			Model:     model,
+			Tokens:    store.TokenMetrics{InputTokens: 10, OutputTokens: 5},
+		}); err != nil {
+			t.Fatalf("InsertActivity: %v", err)
+		}
+	}
+
+	// Filtering narrows the totals but never the model list.
+	stats, err := st.Activity().Stats(ctx, store.ActivityStatsQuery{Model: "m2"})
+	if err != nil {
+		t.Fatalf("ActivityStats: %v", err)
+	}
+	if stats.TotalRequests != 1 {
+		t.Fatalf("filtered TotalRequests = %d, want 1", stats.TotalRequests)
+	}
+	want := []store.ModelActivityCount{{ID: "m1", Requests: 2}, {ID: "m2", Requests: 1}}
+	if len(stats.Models) != len(want) {
+		t.Fatalf("Models = %#v, want %#v", stats.Models, want)
+	}
+	for i := range want {
+		if stats.Models[i] != want[i] {
+			t.Fatalf("Models = %#v, want %#v (most recent first)", stats.Models, want)
+		}
 	}
 }
