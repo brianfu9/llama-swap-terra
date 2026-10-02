@@ -43,9 +43,10 @@ type metricsMonitor struct {
 	logger         *logmon.Monitor
 	enableCaptures bool
 	captureCache   *cache.Cache // zstd-compressed CBOR of ReqRespCapture
+	sessionHeaders []string
 }
 
-func newMetricsMonitor(logger *logmon.Monitor, maxMetrics int, captureBufferMB int, st store.Store) *metricsMonitor {
+func newMetricsMonitor(logger *logmon.Monitor, maxMetrics int, captureBufferMB int, st store.Store, sessionHeaders []string) *metricsMonitor {
 	if maxMetrics <= 0 {
 		maxMetrics = 1000
 	}
@@ -54,6 +55,7 @@ func newMetricsMonitor(logger *logmon.Monitor, maxMetrics int, captureBufferMB i
 		store:          st,
 		maxMetrics:     maxMetrics,
 		enableCaptures: captureBufferMB > 0,
+		sessionHeaders: sessionHeaders,
 	}
 	if captureBufferMB > 0 {
 		mm.captureCache = cache.New(captureBufferMB * 1024 * 1024)
@@ -162,6 +164,19 @@ func (mp *metricsMonitor) record(modelID string, r *http.Request, recorder *resp
 			tm.Metadata = make(map[string]string)
 		}
 		tm.Metadata["selector"] = selectorID
+	}
+	// Read from r.Header, not reqHeaders: the latter is nil unless captures
+	// are enabled and has passed through redactHeaders. Header.Get is
+	// case-insensitive, so a configured "X-Session-ID" matches the inbound
+	// canonical form "X-Session-Id". First header with a value wins.
+	for _, name := range mp.sessionHeaders {
+		if v := strings.TrimSpace(r.Header.Get(name)); v != "" {
+			if tm.Metadata == nil {
+				tm.Metadata = make(map[string]string)
+			}
+			tm.Metadata["session"] = v
+			break
+		}
 	}
 
 	queueAndEmit := func() {
@@ -483,6 +498,8 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 	promptPerSecond := -1.0
 	draftTokens := -1
 	draftAccTokens := -1
+	promptMs := -1
+	predictedMs := -1
 
 	// TabbyAPI reports prompt/completion rates and total time inside its usage
 	// block. These are base values that llama-server timings and vLLM metrics
@@ -506,6 +523,8 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 		outputTokens = timings.Get("predicted_n").Int()
 		promptPerSecond = timings.Get("prompt_per_second").Float()
 		tokensPerSecond = timings.Get("predicted_per_second").Float()
+		promptMs = int(timings.Get("prompt_ms").Float())
+		predictedMs = int(timings.Get("predicted_ms").Float())
 		timingsDurationMs := int(timings.Get("prompt_ms").Float() + timings.Get("predicted_ms").Float())
 		if timingsDurationMs > durationMs {
 			durationMs = timingsDurationMs
@@ -552,6 +571,8 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 			OutputTokens:    int(outputTokens),
 			PromptPerSecond: promptPerSecond,
 			TokensPerSecond: tokensPerSecond,
+			PromptMs:        promptMs,
+			PredictedMs:     predictedMs,
 		},
 		DurationMs: durationMs,
 	}

@@ -64,6 +64,8 @@ export interface TokenMetrics {
   output_tokens: number;
   prompt_per_second: number;
   tokens_per_second: number;
+  prompt_ms: number;
+  predicted_ms: number;
 }
 
 export interface ActivityLogEntry {
@@ -121,6 +123,9 @@ export interface InflightRequestEntry {
   remote_ip: string;
   resp_headers: Record<string, string>;
   resp_bytes: number;
+  input_tokens: number;
+  cache_tokens: number;
+  processed_tokens: number;
   elapsed_ms: number;
   client_received_at_ms?: number;
   metadata?: Record<string, string>;
@@ -189,9 +194,25 @@ export interface HistogramData {
   min: number;
   max: number;
   binSize: number;
-  p99: number;
-  p95: number;
+  p1: number;
+  p10: number;
   p50: number;
+}
+
+export interface PromptScatterPoint {
+  length: number;
+  speed: number;
+  /** llama-server's prompt_ms; <= 0 means the request reported no timing. */
+  prefill_ms?: number;
+  session?: string;
+}
+
+export interface GenScatterPoint {
+  context: number;
+  speed: number;
+  accept: number; // 0..1, or -1 when the request reported no draft tokens
+  output: number;
+  session?: string;
 }
 
 export interface ActivityStatsData {
@@ -201,6 +222,8 @@ export interface ActivityStatsData {
   total_cache_tokens: number;
   prompt_histogram: HistogramData | null;
   gen_histogram: HistogramData | null;
+  prompt_scatter: PromptScatterPoint[];
+  gen_scatter: GenScatterPoint[];
 }
 
 export interface VersionInfo {

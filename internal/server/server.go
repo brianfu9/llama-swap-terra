@@ -238,7 +238,7 @@ func New(cfg config.Config, logs *logmon.Group, perfMon *perf.Monitor, st store.
 		logs:          logs,
 		perf:          perfMon,
 		inflight:      newInflightTracker(),
-		metrics:       newMetricsMonitor(logs.ProxyLogs, cfg.MetricsMaxInMemory, cfg.CaptureBuffer, st),
+		metrics:       newMetricsMonitor(logs.ProxyLogs, cfg.MetricsMaxInMemory, cfg.CaptureBuffer, st, cfg.UI.Activity.SessionID),
 		store:         st,
 		build:         build,
 		hardware:      hardware,
@@ -266,6 +266,7 @@ func New(cfg config.Config, logs *logmon.Group, perfMon *perf.Monitor, st store.
 
 	s.routes()
 	s.startPreload()
+	go s.runSlotPoller()
 	return s, nil
 }
 

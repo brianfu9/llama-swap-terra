@@ -15,6 +15,8 @@ type TokenMetrics struct {
 	OutputTokens    int     `json:"output_tokens"`
 	PromptPerSecond float64 `json:"prompt_per_second"`
 	TokensPerSecond float64 `json:"tokens_per_second"`
+	PromptMs        int     `json:"prompt_ms"`
+	PredictedMs     int     `json:"predicted_ms"`
 }
 
 // ActivityLogEntry represents parsed token statistics from llama-server logs.
@@ -86,6 +88,8 @@ var activitySortKeys = []string{
 	"drafted",
 	"prompt_speed",
 	"gen_speed",
+	"prompt_duration",
+	"gen_duration",
 	"duration",
 }
 
@@ -129,12 +133,37 @@ type ActivityStatsQuery struct {
 
 // ActivityStats are aggregate totals and speed histograms over activity rows.
 type ActivityStats struct {
-	TotalRequests       int            `json:"total_requests"`
-	TotalInputTokens    int            `json:"total_input_tokens"`
-	TotalOutputTokens   int            `json:"total_output_tokens"`
-	TotalCacheTokens    int            `json:"total_cache_tokens"`
-	PromptHistogram     *HistogramData `json:"prompt_histogram"`
-	GenerationHistogram *HistogramData `json:"gen_histogram"`
+	TotalRequests       int                  `json:"total_requests"`
+	TotalInputTokens    int                  `json:"total_input_tokens"`
+	TotalOutputTokens   int                  `json:"total_output_tokens"`
+	TotalCacheTokens    int                  `json:"total_cache_tokens"`
+	PromptHistogram     *HistogramData       `json:"prompt_histogram"`
+	GenerationHistogram *HistogramData       `json:"gen_histogram"`
+	PromptScatter       []PromptScatterPoint `json:"prompt_scatter"`
+	GenScatter          []GenScatterPoint    `json:"gen_scatter"`
+}
+
+// PromptScatterPoint is one completed request's prefill speed and the number
+// of new prompt tokens it processed, for the speed-vs-length scatter plot.
+// PrefillMs is llama-server's measured prompt_ms, or -1 when the request
+// reported no timings; it lets the UI weight prompt lengths by the wall-clock
+// time they actually cost instead of by request count.
+type PromptScatterPoint struct {
+	Length    int     `json:"length"`
+	Speed     float64 `json:"speed"`
+	PrefillMs int     `json:"prefill_ms"`
+	Session   string  `json:"session,omitempty"`
+}
+
+// GenScatterPoint is one completed request's decode speed against the
+// context it was generating over. Accept is the draft acceptance rate,
+// or -1 when the request reported no draft tokens.
+type GenScatterPoint struct {
+	Context int     `json:"context"`
+	Speed   float64 `json:"speed"`
+	Accept  float64 `json:"accept"`
+	Output  int     `json:"output"`
+	Session string  `json:"session,omitempty"`
 }
 
 // HistogramData is a binned distribution with percentile summaries.
@@ -144,12 +173,12 @@ type HistogramData struct {
 	Max     float64 `json:"max"`
 	BinSize float64 `json:"binSize"`
 	P50     float64 `json:"p50"`
-	P95     float64 `json:"p95"`
-	P99     float64 `json:"p99"`
+	P10     float64 `json:"p10"`
+	P1      float64 `json:"p1"`
 }
 
 // NewHistogram bins values into between 5 and 20 equal-width buckets (Sturges'
-// rule) and computes the p50/p95/p99 percentiles. It returns nil for no
+// rule) and computes the p50/p10/p1 percentiles (the slow tail of a speed distribution). It returns nil for no
 // values, and a single bucket with a zero BinSize when every value is equal.
 // The input is not modified.
 func NewHistogram(values []float64) *HistogramData {
@@ -163,8 +192,8 @@ func NewHistogram(values []float64) *HistogramData {
 	maxVal := sorted[len(sorted)-1]
 
 	p50 := percentile(sorted, 50)
-	p95 := percentile(sorted, 95)
-	p99 := percentile(sorted, 99)
+	p10 := percentile(sorted, 10)
+	p1 := percentile(sorted, 1)
 
 	if minVal == maxVal {
 		return &HistogramData{
@@ -173,8 +202,8 @@ func NewHistogram(values []float64) *HistogramData {
 			Max:     maxVal,
 			BinSize: 0,
 			P50:     p50,
-			P95:     p95,
-			P99:     p99,
+			P10:     p10,
+			P1:      p1,
 		}
 	}
 
@@ -196,8 +225,8 @@ func NewHistogram(values []float64) *HistogramData {
 		Max:     maxVal,
 		BinSize: binSize,
 		P50:     p50,
-		P95:     p95,
-		P99:     p99,
+		P10:     p10,
+		P1:      p1,
 	}
 }
 
