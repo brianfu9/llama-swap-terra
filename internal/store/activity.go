@@ -141,6 +141,16 @@ type ActivityStats struct {
 	GenerationHistogram *HistogramData       `json:"gen_histogram"`
 	PromptScatter       []PromptScatterPoint `json:"prompt_scatter"`
 	GenScatter          []GenScatterPoint    `json:"gen_scatter"`
+	// Models lists every model with recorded activity, most recently used
+	// first. It deliberately ignores ActivityStatsQuery.Model: the UI's stats
+	// model selector needs the full list while a single model is selected.
+	Models []ModelActivityCount `json:"models"`
+}
+
+// ModelActivityCount is one entry of ActivityStats.Models.
+type ModelActivityCount struct {
+	ID       string `json:"id"`
+	Requests int    `json:"requests"`
 }
 
 // PromptScatterPoint is one completed request's prefill speed and the number

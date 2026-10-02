@@ -139,9 +139,15 @@ func (r *activityRepository) Stats(ctx context.Context, query store.ActivityStat
 		filter.Models = []string{model}
 	}
 	where, args := activityWhere(filter)
+	// Unfiltered, MAX(id) keeps the total right after pruning (#1136). For one
+	// model (the fork's stats model selector) MAX(id) is not a count, so count rows.
+	total := "COALESCE(MAX(id), 0)"
+	if len(filter.Models) > 0 {
+		total = "COUNT(*)"
+	}
 	row := r.db.QueryRowContext(ctx, `
 		SELECT
-			COALESCE(MAX(id), 0),
+			`+total+`,
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(CASE WHEN cache_tokens > 0 THEN cache_tokens ELSE 0 END), 0)
@@ -166,7 +172,33 @@ func (r *activityRepository) Stats(ctx context.Context, query store.ActivityStat
 		genScatter = []store.GenScatterPoint{}
 	}
 	stats.GenScatter = genScatter
+	models, err := r.activityModels(ctx)
+	if err != nil {
+		return store.ActivityStats{}, err
+	}
+	stats.Models = models
 	return stats, nil
+}
+
+// activityModels lists every model with recorded activity and its request
+// count, most recently used first. Never nil, so the JSON is [] rather than
+// null on an empty store.
+func (r *activityRepository) activityModels(ctx context.Context) ([]store.ModelActivityCount, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT model_id, COUNT(*) FROM activity GROUP BY model_id ORDER BY MAX(id) DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("activity models: %w", err)
+	}
+	defer rows.Close()
+	models := []store.ModelActivityCount{}
+	for rows.Next() {
+		var m store.ModelActivityCount
+		if err := rows.Scan(&m.ID, &m.Requests); err != nil {
+			return nil, fmt.Errorf("activity models: %w", err)
+		}
+		models = append(models, m)
+	}
+	return models, rows.Err()
 }
 
 // speedValues reads both histogram source columns and the scatter point
