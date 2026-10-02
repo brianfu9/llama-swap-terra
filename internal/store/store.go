@@ -114,6 +114,16 @@ type ActivityStats struct {
 	GenerationHistogram *HistogramData       `json:"gen_histogram"`
 	PromptScatter       []PromptScatterPoint `json:"prompt_scatter"`
 	GenScatter          []GenScatterPoint    `json:"gen_scatter"`
+	// Models lists every model with recorded activity, most recently used
+	// first. It deliberately ignores ActivityStatsQuery.Model: the UI's stats
+	// model selector needs the full list while a single model is selected.
+	Models []ModelActivityCount `json:"models"`
+}
+
+// ModelActivityCount is one entry of ActivityStats.Models.
+type ModelActivityCount struct {
+	ID       string `json:"id"`
+	Requests int    `json:"requests"`
 }
 
 // PromptScatterPoint is one completed request's prefill speed and the number
@@ -342,7 +352,33 @@ func (s *Store) ActivityStats(ctx context.Context, query ActivityStatsQuery) (Ac
 		genScatter = []GenScatterPoint{}
 	}
 	stats.GenScatter = genScatter
+	models, err := s.activityModels(ctx)
+	if err != nil {
+		return ActivityStats{}, err
+	}
+	stats.Models = models
 	return stats, nil
+}
+
+// activityModels lists every model with recorded activity and its request
+// count, most recently used first. Never nil, so the JSON is [] rather than
+// null on an empty store.
+func (s *Store) activityModels(ctx context.Context) ([]ModelActivityCount, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT model_id, COUNT(*) FROM activity GROUP BY model_id ORDER BY MAX(id) DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("activity models: %w", err)
+	}
+	defer rows.Close()
+	models := []ModelActivityCount{}
+	for rows.Next() {
+		var m ModelActivityCount
+		if err := rows.Scan(&m.ID, &m.Requests); err != nil {
+			return nil, fmt.Errorf("activity models: %w", err)
+		}
+		models = append(models, m)
+	}
+	return models, rows.Err()
 }
 
 // speedValues reads both histogram source columns and the scatter point

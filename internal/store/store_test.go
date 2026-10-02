@@ -483,3 +483,48 @@ func TestStore_NewFileUsesWAL(t *testing.T) {
 		t.Fatalf("journal_mode = %q, want wal", mode)
 	}
 }
+
+func TestStore_ActivityStatsModels(t *testing.T) {
+	ctx := context.Background()
+	store, err := New("")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer store.Close()
+
+	empty, err := store.ActivityStats(ctx, ActivityStatsQuery{})
+	if err != nil {
+		t.Fatalf("ActivityStats on empty store: %v", err)
+	}
+	if empty.Models == nil || len(empty.Models) != 0 {
+		t.Fatalf("empty store Models = %#v, want non-nil empty slice", empty.Models)
+	}
+
+	for i, model := range []string{"m1", "m2", "m1"} {
+		if _, err := store.InsertActivity(ctx, ActivityLogEntry{
+			Timestamp: time.Unix(int64(i+1), 0),
+			Model:     model,
+			Tokens:    TokenMetrics{InputTokens: 10, OutputTokens: 5},
+		}); err != nil {
+			t.Fatalf("InsertActivity: %v", err)
+		}
+	}
+
+	// Filtering narrows the totals but never the model list.
+	stats, err := store.ActivityStats(ctx, ActivityStatsQuery{Model: "m2"})
+	if err != nil {
+		t.Fatalf("ActivityStats: %v", err)
+	}
+	if stats.TotalRequests != 1 {
+		t.Fatalf("filtered TotalRequests = %d, want 1", stats.TotalRequests)
+	}
+	want := []ModelActivityCount{{ID: "m1", Requests: 2}, {ID: "m2", Requests: 1}}
+	if len(stats.Models) != len(want) {
+		t.Fatalf("Models = %#v, want %#v", stats.Models, want)
+	}
+	for i := range want {
+		if stats.Models[i] != want[i] {
+			t.Fatalf("Models = %#v, want %#v (most recent first)", stats.Models, want)
+		}
+	}
+}

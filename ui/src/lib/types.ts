@@ -200,6 +200,13 @@ export interface ActivityStatsData {
   gen_histogram: HistogramData | null;
   prompt_scatter: PromptScatterPoint[];
   gen_scatter: GenScatterPoint[];
+  /** Every model with recorded activity, most recent first; unaffected by the model filter. */
+  models?: ModelActivityCount[];
+}
+
+export interface ModelActivityCount {
+  id: string;
+  requests: number;
 }
 
 export interface VersionInfo {
