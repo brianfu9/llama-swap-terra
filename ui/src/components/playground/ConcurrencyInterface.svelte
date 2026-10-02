@@ -342,6 +342,11 @@
 
   function formatTickMs(ms: number): string {
     if (ms < 1000) return `${ms}`;
+    if (ms >= 60000) {
+      const minutes = Math.floor(ms / 60000);
+      const seconds = Math.round((ms % 60000) / 1000);
+      return seconds === 0 ? `${minutes}m` : `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+    }
     return `${(ms / 1000).toFixed(ms % 1000 === 0 ? 0 : 1)}s`;
   }
 
@@ -367,6 +372,11 @@
 
   function formatElapsed(ms: number): string {
     if (ms < 1000) return `${Math.round(ms)}ms`;
+    if (ms >= 60000) {
+      const minutes = Math.floor(ms / 60000);
+      const seconds = ((ms % 60000) / 1000).toFixed(2).padStart(5, "0");
+      return `${minutes}m ${seconds}s`;
+    }
     return `${(ms / 1000).toFixed(2)}s`;
   }
 

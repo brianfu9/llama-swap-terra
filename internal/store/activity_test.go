@@ -88,7 +88,7 @@ func TestActivity_NewHistogram(t *testing.T) {
 	if same == nil || len(same.Bins) != 1 || same.Bins[0] != 3 || same.BinSize != 0 || same.Min != 7 || same.Max != 7 {
 		t.Fatalf("all-equal histogram = %+v", same)
 	}
-	if same.P50 != 7 || same.P95 != 7 || same.P99 != 7 {
+	if same.P50 != 7 || same.P10 != 7 || same.P1 != 7 {
 		t.Fatalf("all-equal percentiles = %+v", same)
 	}
 
@@ -116,8 +116,9 @@ func TestActivity_NewHistogram(t *testing.T) {
 		t.Fatalf("max value not in last bucket: %v", h.Bins)
 	}
 	// Linear interpolation: p50 of 10,20,30,40 is 25.
-	if !near(h.P50, 25) || !near(h.P95, 38.5) || !near(h.P99, 39.7) {
-		t.Fatalf("percentiles = p50 %v p95 %v p99 %v", h.P50, h.P95, h.P99)
+	// The fork reports the slow tail of a speed distribution: p10 and p1.
+	if !near(h.P50, 25) || !near(h.P10, 13) || !near(h.P1, 10.3) {
+		t.Fatalf("percentiles = p50 %v p10 %v p1 %v", h.P50, h.P10, h.P1)
 	}
 	// Input must not be sorted in place.
 	if values[0] != 30 {

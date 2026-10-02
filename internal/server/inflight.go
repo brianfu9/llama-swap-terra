@@ -85,13 +85,16 @@ func newInflightTrackerWithPublisher(size int, publish func(swaputil.InFlightReq
 func (t *inflightTracker) Add(r *http.Request, cancel context.CancelFunc) string {
 	id := strconv.FormatUint(t.nextID.Add(1), 10)
 	entry := swaputil.InflightRequestEntry{
-		ID:          id,
-		Timestamp:   inflightStart(r),
-		ReqPath:     r.URL.Path,
-		Method:      r.Method,
-		ReqHeaders:  headerMap(r.Header),
-		RemoteIP:    clientIP(r),
-		RespHeaders: map[string]string{},
+		ID:              id,
+		Timestamp:       inflightStart(r),
+		ReqPath:         r.URL.Path,
+		Method:          r.Method,
+		ReqHeaders:      headerMap(r.Header),
+		RemoteIP:        clientIP(r),
+		RespHeaders:     map[string]string{},
+		InputTokens:     -1,
+		CacheTokens:     -1,
+		ProcessedTokens: -1,
 	}
 	redactHeaders(entry.ReqHeaders)
 	if data, ok := swaputil.ReadContext(r.Context()); ok {
@@ -128,6 +131,21 @@ func (t *inflightTracker) SetResponseHeaders(id string, headers http.Header) {
 	req, ok := t.requests[id]
 	if ok {
 		req.entry.RespHeaders = values
+		req.lastEmitted = time.Now()
+		t.enqueueLocked(upsertInflightEvent(req.entry))
+	}
+	t.mu.Unlock()
+}
+
+func (t *inflightTracker) SetSlotTokens(id string, input, cache, processed int64) {
+	t.mu.Lock()
+	req, ok := t.requests[id]
+	if ok && (req.entry.InputTokens != input ||
+		req.entry.CacheTokens != cache ||
+		req.entry.ProcessedTokens != processed) {
+		req.entry.InputTokens = input
+		req.entry.CacheTokens = cache
+		req.entry.ProcessedTokens = processed
 		req.lastEmitted = time.Now()
 		t.enqueueLocked(upsertInflightEvent(req.entry))
 	}

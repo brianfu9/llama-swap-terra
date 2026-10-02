@@ -107,7 +107,7 @@ func newTestServerWithConfig(cfg config.Config, local router.LocalRouter, peer r
 		cfg:         cfg,
 		logs:        logs,
 		inflight:    newInflightTracker(),
-		metrics:     newMetricsMonitor(proxylog, 0, 0, st),
+		metrics:     newMetricsMonitor(proxylog, 0, 0, st, nil),
 		store:       st,
 		capcompat:   capcompat.New(st.Cache(), proxylog),
 		local:       local,
@@ -153,7 +153,7 @@ func newTestMetricsMonitor(t *testing.T, logger *logmon.Monitor, maxMetrics int,
 			t.Errorf("store.Close: %v", err)
 		}
 	})
-	mm := newMetricsMonitor(logger, maxMetrics, captureBufferMB, st)
+	mm := newMetricsMonitor(logger, maxMetrics, captureBufferMB, st, nil)
 	// Cleanups run last-in first-out, so the pruner stops before the store
 	// closes.
 	t.Cleanup(func() { mm.Close() })

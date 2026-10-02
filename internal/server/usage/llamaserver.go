@@ -77,6 +77,14 @@ func applyTimings(u *Usage, timings gjson.Result) {
 	if v := timings.Get("predicted_per_second"); v.Exists() {
 		u.Tokens.TokensPerSecond = v.Float()
 	}
+	// terra fork: keep the prefill and decode times themselves (activity
+	// prompt_ms / predicted_ms columns, the prefill and decode charts).
+	if v := timings.Get("prompt_ms"); v.Exists() {
+		u.Tokens.PromptMs = int(v.Float())
+	}
+	if v := timings.Get("predicted_ms"); v.Exists() {
+		u.Tokens.PredictedMs = int(v.Float())
+	}
 	if ms := int(timings.Get("prompt_ms").Float() + timings.Get("predicted_ms").Float()); ms > u.DurationMs {
 		u.DurationMs = ms
 	}

@@ -2,7 +2,7 @@
 // Svelte so the arithmetic and rendering rules can be unit tested directly.
 
 import type { ActivityLogEntry } from "./types";
-import { formatAbsoluteTime, formatDuration, formatSpeed } from "./format";
+import { formatAbsoluteTime, formatDuration, formatOptionalDuration, formatSpeed } from "./format";
 
 /** Format a draft acceptance rate as "p% (accepted/drafted)". */
 export function formatDrafted(drafted: number, accepted: number): string {
@@ -138,6 +138,10 @@ export function activityCellText(row: ActivityLogEntry, columnId: string): strin
       return formatSpeed(row.tokens.prompt_per_second);
     case "gen_speed":
       return formatSpeed(row.tokens.tokens_per_second);
+    case "prompt_duration":
+      return formatOptionalDuration(row.tokens.prompt_ms);
+    case "gen_duration":
+      return formatOptionalDuration(row.tokens.predicted_ms);
     case "duration":
       return formatDuration(row.duration_ms);
     case "meta": {

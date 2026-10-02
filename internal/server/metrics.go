@@ -60,6 +60,10 @@ type metricsMonitor struct {
 	pruneStop context.CancelFunc
 	pruneDone chan struct{}
 	closeOnce sync.Once
+
+	// sessionHeaders names the request headers whose first non-empty value
+	// becomes the row's "session" metadata (terra fork).
+	sessionHeaders []string
 }
 
 // capturePruneTimeout bounds one background prune. A prune after
@@ -67,7 +71,7 @@ type metricsMonitor struct {
 // by the next capture.
 const capturePruneTimeout = 5 * time.Minute
 
-func newMetricsMonitor(logger *logmon.Monitor, maxMetrics int, captureBufferMB int, st store.Store) *metricsMonitor {
+func newMetricsMonitor(logger *logmon.Monitor, maxMetrics int, captureBufferMB int, st store.Store, sessionHeaders []string) *metricsMonitor {
 	if maxMetrics <= 0 {
 		maxMetrics = 1000
 	}
@@ -76,6 +80,7 @@ func newMetricsMonitor(logger *logmon.Monitor, maxMetrics int, captureBufferMB i
 		store:          st,
 		maxMetrics:     maxMetrics,
 		enableCaptures: captureBufferMB > 0,
+		sessionHeaders: sessionHeaders,
 	}
 	if captureBufferMB > 0 {
 		mm.maxCaptureBytes = int64(captureBufferMB) * 1024 * 1024
@@ -251,7 +256,7 @@ func (mp *metricsMonitor) newEntry(modelID string, task hint.Task, r *http.Reque
 		RespContentType: recorder.Header().Get("Content-Type"),
 		RespStatusCode:  recorder.Status(),
 		DurationMs:      int(time.Since(recorder.StartTime()).Milliseconds()),
-		Tokens:          TokenMetrics{ReasoningTokens: -1},
+		Tokens:          TokenMetrics{ReasoningTokens: -1, PromptMs: -1, PredictedMs: -1},
 	}
 	tm.Src = activitySource(r)
 
@@ -275,6 +280,19 @@ func (mp *metricsMonitor) newEntry(modelID string, task hint.Task, r *http.Reque
 			tm.Metadata = make(map[string]string)
 		}
 		tm.Metadata["selector"] = selectorID
+	}
+	// Read from r.Header, not reqHeaders: the latter is nil unless captures
+	// are enabled and has passed through redactHeaders. Header.Get is
+	// case-insensitive, so a configured "X-Session-ID" matches the inbound
+	// canonical form "X-Session-Id". First header with a value wins.
+	for _, name := range mp.sessionHeaders {
+		if v := strings.TrimSpace(r.Header.Get(name)); v != "" {
+			if tm.Metadata == nil {
+				tm.Metadata = make(map[string]string)
+			}
+			tm.Metadata["session"] = v
+			break
+		}
 	}
 	return tm, upstream
 }

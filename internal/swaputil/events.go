@@ -84,8 +84,13 @@ type InflightRequestEntry struct {
 	RemoteIP    string            `json:"remote_ip"`
 	RespHeaders map[string]string `json:"resp_headers"`
 	RespBytes   int64             `json:"resp_bytes"`
-	ElapsedMs   int64             `json:"elapsed_ms"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	// InputTokens, CacheTokens and ProcessedTokens come from the upstream
+	// llama-server /slots endpoint. -1 means "not known yet".
+	InputTokens     int64             `json:"input_tokens"`
+	CacheTokens     int64             `json:"cache_tokens"`
+	ProcessedTokens int64             `json:"processed_tokens"`
+	ElapsedMs       int64             `json:"elapsed_ms"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
 type ProfileChangedEvent struct {

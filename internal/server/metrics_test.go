@@ -16,6 +16,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/config"
 	"github.com/mostlygeek/llama-swap/internal/hint"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
+	"github.com/mostlygeek/llama-swap/internal/store/sqlite"
 	"github.com/mostlygeek/llama-swap/internal/swaputil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -187,6 +188,45 @@ func TestMetricsMonitor_RecordMetadata(t *testing.T) {
 	}
 	if entries[0].Metadata["trace"] != "abc" {
 		t.Errorf("trace = %q, want abc", entries[0].Metadata["trace"])
+	}
+}
+
+// The configured header name is stored as written ("X-Session-ID"), but the
+// inbound request carries Go's canonical form ("X-Session-Id"). record must
+// match case-insensitively, which reading r.Header does and the redacted
+// reqHeaders map would not.
+func TestMetricsMonitor_RecordSessionHeader(t *testing.T) {
+	st, err := sqlite.New("", "")
+	if err != nil {
+		t.Fatalf("sqlite.New: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+	mm := &metricsMonitor{
+		store:          st,
+		maxMetrics:     10,
+		sessionHeaders: []string{"X-Session-ID"},
+	}
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"usage":{}}`))
+	r.Header.Set("X-Session-Id", "ses_abc")
+
+	w := httptest.NewRecorder()
+	copier := newBodyCopier(w)
+	copier.WriteHeader(http.StatusOK)
+	copier.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":2}}`))
+
+	mm.record("m", hint.TaskChat, r, copier, 0, nil, nil)
+
+	entries := metricsEntries(t, mm)
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	if entries[0].Metadata["session"] != "ses_abc" {
+		t.Errorf("session = %q, want ses_abc", entries[0].Metadata["session"])
 	}
 }
 

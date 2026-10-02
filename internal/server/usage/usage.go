@@ -182,6 +182,8 @@ func (a apiUsage) toUsage(start time.Time) Usage {
 			TokensPerSecond: -1,
 			DraftTokens:     -1,
 			DraftAccTokens:  -1,
+			PromptMs:        -1,
+			PredictedMs:     -1,
 		},
 		DurationMs: int(time.Since(start).Milliseconds()),
 	}
