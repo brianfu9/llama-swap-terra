@@ -81,7 +81,7 @@ func newTestServer(local router.LocalRouter, peer router.Router) *Server {
 		proxylog:    proxylog,
 		upstreamlog: logmon.NewWriter(io.Discard),
 		inflight:    newInflightTracker(),
-		metrics:     newMetricsMonitor(proxylog, 0, 0, st),
+		metrics:     newMetricsMonitor(proxylog, 0, 0, st, nil),
 		store:       st,
 		local:       local,
 		peer:        peer,
@@ -103,7 +103,7 @@ func newTestMetricsMonitor(t *testing.T, logger *logmon.Monitor, maxMetrics int,
 			t.Errorf("store.Close: %v", err)
 		}
 	})
-	return newMetricsMonitor(logger, maxMetrics, captureBufferMB, st)
+	return newMetricsMonitor(logger, maxMetrics, captureBufferMB, st, nil)
 }
 
 func metricsEntries(t *testing.T, mm *metricsMonitor) []ActivityLogEntry {

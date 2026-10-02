@@ -4,6 +4,7 @@ import {
   formatSpeed,
   formatFileSize,
   formatCapacity,
+  formatCompact,
   formatRelativeTime,
   formatAbsoluteTime,
 } from "./format";
@@ -23,6 +24,17 @@ describe("formatDuration", () => {
     expect(formatDuration(850, { precision: 1, subSecondMs: true })).toBe("850ms");
     expect(formatDuration(1500, { precision: 1, subSecondMs: true })).toBe("1.5s");
     expect(formatDuration(999, { subSecondMs: true })).toBe("999ms");
+  });
+
+  it("renders mixed minutes and seconds at 60s and above", () => {
+    expect(formatDuration(60000)).toBe("1m 00.00s");
+    expect(formatDuration(65430)).toBe("1m 05.43s");
+    expect(formatDuration(600000)).toBe("10m 00.00s");
+  });
+
+  it("honors precision in the minutes branch", () => {
+    expect(formatDuration(65000, { precision: 0 })).toBe("1m 05s");
+    expect(formatDuration(65000, { precision: 1 })).toBe("1m 05.0s");
   });
 });
 
@@ -92,5 +104,40 @@ describe("formatAbsoluteTime", () => {
     expect(formatAbsoluteTime(new Date(2026, 11, 31, 23, 59, 59).toISOString())).toBe(
       "2026-12-31 23:59:59"
     );
+  });
+});
+
+describe("formatCompact", () => {
+  it("leaves values under a thousand whole", () => {
+    expect(formatCompact(0)).toBe("0");
+    expect(formatCompact(1)).toBe("1");
+    expect(formatCompact(999)).toBe("999");
+  });
+
+  it("abbreviates to k/m/b with one decimal", () => {
+    expect(formatCompact(5600)).toBe("5.6k");
+    expect(formatCompact(1000)).toBe("1.0k");
+    expect(formatCompact(123400000)).toBe("123.4m");
+    expect(formatCompact(2500000000)).toBe("2.5b");
+  });
+
+  it("promotes rather than printing a four-digit mantissa", () => {
+    expect(formatCompact(999.6)).toBe("1.0k");
+    expect(formatCompact(999999)).toBe("1.0m");
+    expect(formatCompact(999999999)).toBe("1.0b");
+  });
+
+  it("caps at billions", () => {
+    expect(formatCompact(1e12)).toBe("1000.0b");
+  });
+
+  it("preserves the sign", () => {
+    expect(formatCompact(-5600)).toBe("-5.6k");
+    expect(formatCompact(-12)).toBe("-12");
+  });
+
+  it("falls back to zero for non-finite input", () => {
+    expect(formatCompact(NaN)).toBe("0");
+    expect(formatCompact(Infinity)).toBe("0");
   });
 });

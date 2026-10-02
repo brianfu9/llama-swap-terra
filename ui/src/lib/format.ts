@@ -13,12 +13,52 @@ export function formatDuration(ms: number, opts: FormatDurationOptions = {}): st
   if (subSecondMs && ms < 1000) {
     return `${ms.toFixed(0)}ms`;
   }
+  if (ms >= 60000) {
+    const minutes = Math.floor(ms / 60000);
+    const seconds = (ms % 60000) / 1000;
+    const secondsStr = seconds.toFixed(precision).padStart(precision > 0 ? precision + 3 : 2, "0");
+    return `${minutes}m ${secondsStr}s`;
+  }
   return `${(ms / 1000).toFixed(precision)}s`;
 }
 
 /** Format a tokens-per-second value; negative values are reported as "unknown". */
 export function formatSpeed(speed: number): string {
   return speed < 0 ? "unknown" : speed.toFixed(2) + " t/s";
+}
+
+/**
+ * Format a duration in ms that may be absent; negative values are reported as
+ * "unknown". Responses without llama-server timings store -1, and rows written
+ * before the timings columns existed are backfilled to -1 by migration 00002.
+ */
+export function formatOptionalDuration(ms: number, opts: FormatDurationOptions = {}): string {
+  return ms < 0 ? "unknown" : formatDuration(ms, opts);
+}
+
+/**
+ * Abbreviate a large count to its k/m/b root with one decimal — 5.6k, 123.4m.
+ * Values under 1000 stay whole. This is a lossy display format: callers that
+ * show a headline total should keep the exact value in a title attribute.
+ */
+export function formatCompact(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  const units = ["", "k", "m", "b"];
+  const sign = value < 0 ? "-" : "";
+  let magnitude = Math.abs(value);
+  let unit = 0;
+  // Round at the precision the step will actually be printed at before
+  // promoting, so 999,999 reads "1.0m" rather than "1000.0k".
+  const rounded = (input: number, places: number) => {
+    const scale = 10 ** places;
+    return Math.round(input * scale) / scale;
+  };
+  while (unit < units.length - 1 && rounded(magnitude, unit === 0 ? 0 : 1) >= 1000) {
+    magnitude /= 1000;
+    unit++;
+  }
+  if (unit === 0) return sign + String(Math.round(magnitude));
+  return sign + magnitude.toFixed(1) + units[unit];
 }
 
 /** Format a byte count as B / KB / MB. */

@@ -45,7 +45,7 @@
   import MiddleEllipsis from "./activity-table/MiddleEllipsis.svelte";
   import ExportDialog from "./activity-table/ExportDialog.svelte";
   import { buildActivityMarkdown, formatDrafted } from "../lib/activityExport";
-  import { formatDuration, formatSpeed, formatRelativeTime } from "../lib/format";
+  import { formatDuration, formatOptionalDuration, formatSpeed, formatRelativeTime } from "../lib/format";
   import { formatBytes, liveElapsedMs, requestHeader, sessionID } from "../lib/inflight";
 
   interface Props {
@@ -120,6 +120,8 @@
       { id: "drafted", label: "Drafted", defaultVisible: false },
       { id: "prompt_speed", label: "Prefill", defaultVisible: true },
       { id: "gen_speed", label: "Decode", defaultVisible: true },
+      { id: "prompt_duration", label: "Prefill Time", defaultVisible: true },
+      { id: "gen_duration", label: "Decode Time", defaultVisible: true },
       { id: "duration", label: "Duration", defaultVisible: true },
       { id: "capture", label: "Capture", defaultVisible: true },
       { id: "meta", label: "Meta", defaultVisible: false }
@@ -191,7 +193,10 @@
       { id: "identity", label: "Address", defaultVisible: true },
       { id: "user_agent", label: "User Agent", defaultVisible: true },
       { id: "session_id", label: "Session ID", defaultVisible: true },
-      { id: "bytes_received", label: "Bytes Received", defaultVisible: true }
+      { id: "bytes_received", label: "Bytes Received", defaultVisible: true },
+      { id: "input_tokens", label: "Input", defaultVisible: true },
+      { id: "cache_tokens", label: "Cached", defaultVisible: true },
+      { id: "prefill_progress", label: "Prefill", defaultVisible: true }
     );
     return cols;
   }
@@ -417,6 +422,18 @@
         cell: ({ row }) => formatSpeed(row.original.tokens.tokens_per_second),
       },
       {
+        id: "prompt_duration",
+        accessorFn: (row) => row.tokens.prompt_ms,
+        header: "Prefill Time",
+        cell: ({ row }) => formatOptionalDuration(row.original.tokens.prompt_ms),
+      },
+      {
+        id: "gen_duration",
+        accessorFn: (row) => row.tokens.predicted_ms,
+        header: "Decode Time",
+        cell: ({ row }) => formatOptionalDuration(row.original.tokens.predicted_ms),
+      },
+      {
         id: "duration",
         accessorKey: "duration_ms",
         header: "Duration",
@@ -603,6 +620,15 @@
     return `${(liveElapsedMs(request.elapsed_ms, request.client_received_at_ms, nowMs) / 1000).toFixed(2)}s`;
   }
 
+  // llama.cpp's n_prompt_tokens is a running lower bound during a cold prefill —
+  // it sits exactly one batch (2048) ahead of processed rather than reporting the
+  // prompt length — so it cannot serve as a denominator without the percentage
+  // oscillating. Show the processed count alone: monotonic and always truthful.
+  function formatPrefillProgress(processed: number): string {
+    if (processed < 0) return "—";
+    return processed.toLocaleString();
+  }
+
   function toggleInflightColumn(id: string, visible: boolean) {
     inflightColumnVisibility = { ...inflightColumnVisibility, [id]: visible };
     storedInflightVisibility.set(inflightColumnVisibility);
@@ -751,6 +777,18 @@
                     <MiddleEllipsis value={session} tailLength={8} className="max-w-[14rem] font-mono text-xs" />
                   {:else if columnId === "bytes_received"}
                     <span class="font-mono text-xs tabular-nums">{formatBytes(request.resp_bytes)}</span>
+                  {:else if columnId === "input_tokens"}
+                    <span class="font-mono text-xs tabular-nums">
+                      {request.input_tokens < 0 ? "—" : request.input_tokens.toLocaleString()}
+                    </span>
+                  {:else if columnId === "cache_tokens"}
+                    <span class="font-mono text-xs tabular-nums">
+                      {request.cache_tokens < 0 ? "—" : request.cache_tokens.toLocaleString()}
+                    </span>
+                  {:else if columnId === "prefill_progress"}
+                    <span class="font-mono text-xs tabular-nums">
+                      {formatPrefillProgress(request.processed_tokens)}
+                    </span>
                   {/if}
                 </Table.Cell>
               {/each}

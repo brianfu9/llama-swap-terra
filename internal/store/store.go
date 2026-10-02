@@ -28,6 +28,8 @@ type TokenMetrics struct {
 	OutputTokens    int     `json:"output_tokens"`
 	PromptPerSecond float64 `json:"prompt_per_second"`
 	TokensPerSecond float64 `json:"tokens_per_second"`
+	PromptMs        int     `json:"prompt_ms"`
+	PredictedMs     int     `json:"predicted_ms"`
 }
 
 // ActivityLogEntry represents parsed token statistics from llama-server logs.
@@ -79,6 +81,8 @@ var activitySortColumns = map[string]string{
 	"drafted":           "draft_tokens",
 	"prompt_speed":      "prompt_per_second",
 	"gen_speed":         "tokens_per_second",
+	"prompt_duration":   "prompt_ms",
+	"gen_duration":      "predicted_ms",
 	"duration":          "duration_ms",
 }
 
@@ -102,12 +106,37 @@ type ActivityStatsQuery struct {
 }
 
 type ActivityStats struct {
-	TotalRequests       int            `json:"total_requests"`
-	TotalInputTokens    int            `json:"total_input_tokens"`
-	TotalOutputTokens   int            `json:"total_output_tokens"`
-	TotalCacheTokens    int            `json:"total_cache_tokens"`
-	PromptHistogram     *HistogramData `json:"prompt_histogram"`
-	GenerationHistogram *HistogramData `json:"gen_histogram"`
+	TotalRequests       int                  `json:"total_requests"`
+	TotalInputTokens    int                  `json:"total_input_tokens"`
+	TotalOutputTokens   int                  `json:"total_output_tokens"`
+	TotalCacheTokens    int                  `json:"total_cache_tokens"`
+	PromptHistogram     *HistogramData       `json:"prompt_histogram"`
+	GenerationHistogram *HistogramData       `json:"gen_histogram"`
+	PromptScatter       []PromptScatterPoint `json:"prompt_scatter"`
+	GenScatter          []GenScatterPoint    `json:"gen_scatter"`
+}
+
+// PromptScatterPoint is one completed request's prefill speed and the number
+// of new prompt tokens it processed, for the speed-vs-length scatter plot.
+// PrefillMs is llama-server's measured prompt_ms, or -1 when the request
+// reported no timings; it lets the UI weight prompt lengths by the wall-clock
+// time they actually cost instead of by request count.
+type PromptScatterPoint struct {
+	Length    int     `json:"length"`
+	Speed     float64 `json:"speed"`
+	PrefillMs int     `json:"prefill_ms"`
+	Session   string  `json:"session,omitempty"`
+}
+
+// GenScatterPoint is one completed request's decode speed against the
+// context it was generating over. Accept is the draft acceptance rate,
+// or -1 when the request reported no draft tokens.
+type GenScatterPoint struct {
+	Context int     `json:"context"`
+	Speed   float64 `json:"speed"`
+	Accept  float64 `json:"accept"`
+	Output  int     `json:"output"`
+	Session string  `json:"session,omitempty"`
 }
 
 type HistogramData struct {
@@ -116,8 +145,8 @@ type HistogramData struct {
 	Max     float64 `json:"max"`
 	BinSize float64 `json:"binSize"`
 	P50     float64 `json:"p50"`
-	P95     float64 `json:"p95"`
-	P99     float64 `json:"p99"`
+	P10     float64 `json:"p10"`
+	P1      float64 `json:"p1"`
 }
 
 type Store struct {
@@ -202,8 +231,9 @@ func (s *Store) InsertActivity(ctx context.Context, entry ActivityLogEntry) (Act
 		INSERT INTO activity (
 			ts_created, model_id, req_path, resp_content_type, resp_status_code,
 			cache_tokens, draft_tokens, draft_acc_tokens, input_tokens, output_tokens,
-			prompt_per_second, tokens_per_second, duration_ms, error_msg, metadata_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			prompt_per_second, tokens_per_second, prompt_ms, predicted_ms, duration_ms,
+			error_msg, metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.Timestamp.Unix(),
 		entry.Model,
 		entry.ReqPath,
@@ -216,6 +246,8 @@ func (s *Store) InsertActivity(ctx context.Context, entry ActivityLogEntry) (Act
 		entry.Tokens.OutputTokens,
 		entry.Tokens.PromptPerSecond,
 		entry.Tokens.TokensPerSecond,
+		entry.Tokens.PromptMs,
+		entry.Tokens.PredictedMs,
 		entry.DurationMs,
 		entry.ErrorMsg,
 		metadataJSON,
@@ -245,7 +277,8 @@ func (s *Store) ListActivity(ctx context.Context, query ActivityQuery) (Activity
 		SELECT
 			id, ts_created, model_id, req_path, resp_content_type, resp_status_code,
 			cache_tokens, draft_tokens, draft_acc_tokens, input_tokens, output_tokens,
-			prompt_per_second, tokens_per_second, duration_ms, error_msg, metadata_json
+			prompt_per_second, tokens_per_second, prompt_ms, predicted_ms, duration_ms,
+			error_msg, metadata_json
 		FROM activity`+where+activityOrderBy(query)+`
 		LIMIT ? OFFSET ?`,
 		append(args, query.Limit, offset)...,
@@ -295,19 +328,29 @@ func (s *Store) ActivityStats(ctx context.Context, query ActivityStatsQuery) (Ac
 		return ActivityStats{}, fmt.Errorf("activity stats: %w", err)
 	}
 
-	promptValues, genValues, err := s.speedValues(ctx, where, args)
+	promptValues, genValues, promptScatter, genScatter, err := s.speedValues(ctx, where, args)
 	if err != nil {
 		return ActivityStats{}, err
 	}
 	stats.PromptHistogram = calculateHistogramData(promptValues)
 	stats.GenerationHistogram = calculateHistogramData(genValues)
+	if promptScatter == nil {
+		promptScatter = []PromptScatterPoint{}
+	}
+	stats.PromptScatter = promptScatter
+	if genScatter == nil {
+		genScatter = []GenScatterPoint{}
+	}
+	stats.GenScatter = genScatter
 	return stats, nil
 }
 
-// speedValues reads both histogram source columns in a single scan. Zero
-// values mean the speed was not reported and are excluded per column. No
-// ORDER BY: calculateHistogramData sorts the values itself.
-func (s *Store) speedValues(ctx context.Context, where string, args []any) (prompt, gen []float64, err error) {
+// speedValues reads both histogram source columns and the scatter point
+// fields in a single scan. Zero values mean the speed was not reported and
+// are excluded per column. Rows come back oldest-to-newest (ORDER BY id): the
+// histograms sort themselves, but the scatter's "latest session" slot
+// assignment relies on that chronological order.
+func (s *Store) speedValues(ctx context.Context, where string, args []any) (prompt, gen []float64, scatter []PromptScatterPoint, genScatter []GenScatterPoint, err error) {
 	filter := where
 	if filter == "" {
 		filter = ` WHERE prompt_per_second > 0 OR tokens_per_second > 0`
@@ -315,25 +358,54 @@ func (s *Store) speedValues(ctx context.Context, where string, args []any) (prom
 		filter += ` AND (prompt_per_second > 0 OR tokens_per_second > 0)`
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT prompt_per_second, tokens_per_second FROM activity`+filter, args...)
+		`SELECT prompt_per_second, tokens_per_second, input_tokens, cache_tokens,
+               output_tokens, draft_tokens, draft_acc_tokens, prompt_ms,
+               CASE WHEN json_valid(metadata_json)
+                    THEN COALESCE(json_extract(metadata_json, '$.session'), '')
+                    ELSE '' END
+        FROM activity`+filter+` ORDER BY id ASC`, args...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("activity histogram: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("activity histogram: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var promptValue, genValue float64
-		if err := rows.Scan(&promptValue, &genValue); err != nil {
-			return nil, nil, fmt.Errorf("activity histogram row: %w", err)
+		var inputTokens, cacheTokens, outputTokens, draftTokens, draftAccTokens, promptMs int
+		var session string
+		if err := rows.Scan(&promptValue, &genValue, &inputTokens, &cacheTokens, &outputTokens, &draftTokens, &draftAccTokens, &promptMs, &session); err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("activity histogram row: %w", err)
 		}
 		if promptValue > 0 {
 			prompt = append(prompt, promptValue)
+			if inputTokens > 0 {
+				scatter = append(scatter, PromptScatterPoint{
+					Length:    inputTokens,
+					Speed:     promptValue,
+					PrefillMs: promptMs,
+					Session:   session,
+				})
+			}
 		}
 		if genValue > 0 {
 			gen = append(gen, genValue)
+			if context := inputTokens + cacheTokens; context > 0 {
+				// -1 is the "no data" sentinel, matching prompt_ms/predicted_ms.
+				accept := -1.0
+				if draftTokens > 0 {
+					accept = float64(draftAccTokens) / float64(draftTokens)
+				}
+				genScatter = append(genScatter, GenScatterPoint{
+					Context: context,
+					Speed:   genValue,
+					Accept:  accept,
+					Output:  outputTokens,
+					Session: session,
+				})
+			}
 		}
 	}
-	return prompt, gen, rows.Err()
+	return prompt, gen, scatter, genScatter, rows.Err()
 }
 
 func (s *Store) PruneActivity(ctx context.Context, maxRows int) error {
@@ -399,8 +471,8 @@ func calculateHistogramData(values []float64) *HistogramData {
 	maxVal := sorted[len(sorted)-1]
 
 	p50 := percentile(sorted, 50)
-	p95 := percentile(sorted, 95)
-	p99 := percentile(sorted, 99)
+	p10 := percentile(sorted, 10)
+	p1 := percentile(sorted, 1)
 
 	if minVal == maxVal {
 		return &HistogramData{
@@ -409,8 +481,8 @@ func calculateHistogramData(values []float64) *HistogramData {
 			Max:     maxVal,
 			BinSize: 0,
 			P50:     p50,
-			P95:     p95,
-			P99:     p99,
+			P10:     p10,
+			P1:      p1,
 		}
 	}
 
@@ -432,8 +504,8 @@ func calculateHistogramData(values []float64) *HistogramData {
 		Max:     maxVal,
 		BinSize: binSize,
 		P50:     p50,
-		P95:     p95,
-		P99:     p99,
+		P10:     p10,
+		P1:      p1,
 	}
 }
 
@@ -528,6 +600,8 @@ func scanActivity(scanner activityScanner) (ActivityLogEntry, error) {
 		&entry.Tokens.OutputTokens,
 		&entry.Tokens.PromptPerSecond,
 		&entry.Tokens.TokensPerSecond,
+		&entry.Tokens.PromptMs,
+		&entry.Tokens.PredictedMs,
 		&entry.DurationMs,
 		&entry.ErrorMsg,
 		&metadataJSON,

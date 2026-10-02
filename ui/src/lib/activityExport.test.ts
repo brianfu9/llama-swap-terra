@@ -29,6 +29,8 @@ function entry(overrides: Partial<ActivityLogEntry> = {}): ActivityLogEntry {
       output_tokens: 0,
       prompt_per_second: -1,
       tokens_per_second: -1,
+      prompt_ms: -1,
+      predicted_ms: -1,
       ...(overrides.tokens ?? {}),
     },
   };
@@ -85,6 +87,8 @@ describe("summarizeActivity", () => {
           output_tokens: 50,
           prompt_per_second: 100,
           tokens_per_second: 25,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
       entry({
@@ -97,6 +101,8 @@ describe("summarizeActivity", () => {
           output_tokens: 150,
           prompt_per_second: 300,
           tokens_per_second: 75,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
     ]);
@@ -121,6 +127,8 @@ describe("summarizeActivity", () => {
           output_tokens: 0,
           prompt_per_second: 100,
           tokens_per_second: -1,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
       entry({
@@ -132,6 +140,8 @@ describe("summarizeActivity", () => {
           output_tokens: 0,
           prompt_per_second: 300,
           tokens_per_second: -1,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
     ]);
@@ -153,6 +163,8 @@ describe("summarizeActivity", () => {
           output_tokens: 40,
           prompt_per_second: -1,
           tokens_per_second: 20,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
       entry({
@@ -164,6 +176,8 @@ describe("summarizeActivity", () => {
           output_tokens: 0,
           prompt_per_second: 999,
           tokens_per_second: 999,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
     ]);
@@ -190,6 +204,8 @@ describe("activityCellText", () => {
       output_tokens: 512,
       prompt_per_second: 123.456,
       tokens_per_second: -1,
+      prompt_ms: -1,
+      predicted_ms: -1,
     },
   });
 
@@ -273,6 +289,8 @@ describe("summaryMarkdown", () => {
           output_tokens: 1904,
           prompt_per_second: 412.3,
           tokens_per_second: 48.15,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
     ]);

@@ -294,12 +294,16 @@ func TestStore_ActivityStats(t *testing.T) {
 		{
 			Timestamp: time.Unix(1, 0),
 			Model:     "m1",
+			Metadata:  map[string]string{"session": "ses_test1"},
 			Tokens: TokenMetrics{
 				CachedTokens:    2,
 				InputTokens:     10,
 				OutputTokens:    20,
 				PromptPerSecond: 100,
 				TokensPerSecond: 50,
+				PromptMs:        250,
+				DraftTokens:     10,
+				DraftAccTokens:  7,
 			},
 		},
 		{
@@ -311,6 +315,7 @@ func TestStore_ActivityStats(t *testing.T) {
 				OutputTokens:    8,
 				PromptPerSecond: 200,
 				TokensPerSecond: 100,
+				DraftTokens:     0,
 			},
 		},
 		{
@@ -338,6 +343,70 @@ func TestStore_ActivityStats(t *testing.T) {
 	}
 	if stats.PromptHistogram == nil || stats.GenerationHistogram == nil {
 		t.Fatalf("expected histograms: %+v", stats)
+	}
+	if len(stats.PromptScatter) != 2 {
+		t.Fatalf("expected 2 prompt scatter points, got %+v", stats.PromptScatter)
+	}
+	promptSessions := map[int]string{}
+	for _, p := range stats.PromptScatter {
+		promptSessions[p.Length] = p.Session
+	}
+	if _, ok := promptSessions[10]; !ok {
+		t.Fatalf("prompt scatter lengths = %+v, want length 10", stats.PromptScatter)
+	}
+	if _, ok := promptSessions[5]; !ok {
+		t.Fatalf("prompt scatter lengths = %+v, want length 5", stats.PromptScatter)
+	}
+	promptMs := map[int]int{}
+	for _, p := range stats.PromptScatter {
+		promptMs[p.Length] = p.PrefillMs
+	}
+	if promptMs[10] != 250 {
+		t.Errorf("prompt scatter prefill_ms for length 10 = %d, want 250", promptMs[10])
+	}
+	// "No timing" has two spellings: buildMetrics and the 00002 migration both
+	// write -1, while a TokenMetrics built without PromptMs stores Go's zero.
+	// Consumers must treat anything <= 0 as missing, not just -1.
+	if promptMs[5] != 0 {
+		t.Errorf("prompt scatter prefill_ms for length 5 = %d, want 0 (unset)", promptMs[5])
+	}
+	if promptSessions[10] != "ses_test1" {
+		t.Errorf("prompt scatter session for length 10 = %q, want ses_test1", promptSessions[10])
+	}
+	if promptSessions[5] != "" {
+		t.Errorf("prompt scatter session for length 5 = %q, want empty (no metadata)", promptSessions[5])
+	}
+
+	if len(stats.GenScatter) != 2 {
+		t.Fatalf("expected 2 gen scatter points, got %+v", stats.GenScatter)
+	}
+	genByContext := map[int]GenScatterPoint{}
+	for _, g := range stats.GenScatter {
+		genByContext[g.Context] = g
+	}
+	// Context is input + cache: 10+2 for the first row, 5+(-1) for the second.
+	got, ok := genByContext[12]
+	if !ok {
+		t.Fatalf("gen scatter missing context 12: %+v", stats.GenScatter)
+	}
+	if got.Speed != 50 || got.Output != 20 || got.Session != "ses_test1" {
+		t.Errorf("gen scatter[12] = %+v, want speed 50 output 20 session ses_test1", got)
+	}
+	if got.Accept != 0.7 {
+		t.Errorf("gen scatter[12] accept = %v, want 0.7 (7/10)", got.Accept)
+	}
+	got, ok = genByContext[4]
+	if !ok {
+		t.Fatalf("gen scatter missing context 4: %+v", stats.GenScatter)
+	}
+	if got.Speed != 100 || got.Output != 8 {
+		t.Errorf("gen scatter[4] = %+v, want speed 100 output 8", got)
+	}
+	if got.Accept != -1 {
+		t.Errorf("gen scatter[4] accept = %v, want -1 (draft_tokens == 0)", got.Accept)
+	}
+	if got.Session != "" {
+		t.Errorf("gen scatter[4] session = %q, want empty (no metadata)", got.Session)
 	}
 }
 
