@@ -17,8 +17,6 @@
 // blames it on decode; the system rate counts it correctly, because tokens
 // over union time does not care which slot owned the batch.
 
-import { buildPrefillTime, type PrefillSample, type PrefillTimeData } from "./prefillTime";
-
 /** One request's decode, as the stats endpoint reports it. */
 export interface DecodeSample {
   /** Unix ms the response finished. */
@@ -85,6 +83,14 @@ export interface ConcurrencyData {
   /** System rate at k = 1, the speedup baseline. 0 when nothing ran alone. */
   soloTps: number;
   maxK: number;
+  /**
+   * Per input sample, in input order: the system rate averaged over that
+   * request's own decode. A solo request keeps its own rate; a request that
+   * shared the GPU gets what the GPU produced in total meanwhile. NaN for a
+   * sample that could not be placed (no timing), so callers can fall back to
+   * the reported speed.
+   */
+  systemSpeeds: number[];
   timed: number;
   /** Requests dropped for having no decode timing or end time. */
   untimed: number;
@@ -102,6 +108,7 @@ const EMPTY: ConcurrencyData = {
   meanConcurrency: 0,
   soloTps: 0,
   maxK: 0,
+  systemSpeeds: [],
   timed: 0,
   untimed: 0,
 };
@@ -122,12 +129,17 @@ interface Span {
   speed: number;
   /** Accumulated k x ms over the span, for the time-weighted mean k. */
   kMs: number;
+  /** Tokens the whole system produced while this span was running. */
+  sysTokens: number;
+  /** Index into the input samples. */
+  index: number;
 }
 
 export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
   const spans: Span[] = [];
   let untimed = 0;
-  for (const s of samples) {
+  const systemSpeeds = new Array<number>(samples.length).fill(NaN);
+  for (const [index, s] of samples.entries()) {
     if (!Number.isFinite(s.speed) || s.speed <= 0 || !(s.output > 0)) continue;
     const end = s.endMs;
     const ms = s.decodeMs;
@@ -137,9 +149,18 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
       untimed++;
       continue;
     }
-    spans.push({ start: end - ms, end, rate: s.output / ms, output: s.output, speed: s.speed, kMs: 0 });
+    spans.push({
+      start: end - ms,
+      end,
+      rate: s.output / ms,
+      output: s.output,
+      speed: s.speed,
+      kMs: 0,
+      sysTokens: 0,
+      index,
+    });
   }
-  if (spans.length === 0) return { ...EMPTY, untimed };
+  if (spans.length === 0) return { ...EMPTY, systemSpeeds, untimed };
 
   // Sweep the start/end edges. Every edge at one instant is applied before
   // the next segment opens, so a decode ending exactly when another starts
@@ -170,9 +191,10 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
     if (dur <= 0) continue;
     const k = active.size;
     let rate = 0;
+    for (const idx of active) rate += spans[idx].rate;
     for (const idx of active) {
-      rate += spans[idx].rate;
       spans[idx].kMs += k * dur;
+      spans[idx].sysTokens += rate * dur;
     }
     segments.push({ start: t, end: next, k, systemTps: rate * 1000 });
     const level = busy.get(k) ?? { ms: 0, tokens: 0 };
@@ -189,6 +211,10 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
     sumMs += dur;
     totalTokens += sp.output;
     const meanK = sp.kMs / dur;
+    // Solo, sysTokens/dur is the span's own token rate (output / predicted_ms)
+    // rather than the reported speed, which can differ by rounding; keep the
+    // reported figure there so solo points do not move when this mode is on.
+    systemSpeeds[sp.index] = meanK <= 1 + 1e-9 ? sp.speed : (sp.sysTokens / dur) * 1000;
     return { meanK, k: Math.max(1, Math.round(meanK)), speed: sp.speed };
   });
 
@@ -235,20 +261,8 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
     meanConcurrency: unionMs > 0 ? sumMs / unionMs : 0,
     soloTps,
     maxK,
+    systemSpeeds,
     timed: spans.length,
     untimed,
   };
-}
-
-/**
- * Time-weighted histogram of the system decode rate. Each segment is one
- * sample whose weight is its duration, so a bar is the share of busy time the
- * system spent producing tokens at that rate. Reuses the prefill binning.
- */
-export function buildSystemDecodeTime(data: ConcurrencyData, binCount = 18): PrefillTimeData {
-  const samples: PrefillSample[] = data.segments.map((s) => ({
-    speed: s.systemTps,
-    prefillMs: s.end - s.start,
-  }));
-  return { ...buildPrefillTime(samples, binCount), untimed: data.untimed };
 }

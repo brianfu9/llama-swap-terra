@@ -103,7 +103,7 @@ func (r *activityRepository) List(ctx context.Context, query store.ActivityQuery
 			id, ts_created, src, model_id, req_path, resp_content_type, resp_status_code,
 			cache_tokens, draft_tokens, draft_acc_tokens, input_tokens, output_tokens,
 			prompt_per_second, tokens_per_second, prompt_ms, predicted_ms, duration_ms,
-			error_msg, metadata_json
+			error_msg, metadata_json, ts_end_ms
 		FROM activity`+where+activityOrderBy(query)+`
 		LIMIT ? OFFSET ?`,
 		append(args, query.Limit, offset)...,
@@ -371,7 +371,7 @@ type activityScanner interface {
 
 func scanActivity(scanner activityScanner) (store.ActivityLogEntry, error) {
 	var entry store.ActivityLogEntry
-	var ts int64
+	var ts, endMs int64
 	var metadataJSON string
 	if err := scanner.Scan(
 		&entry.ID,
@@ -393,10 +393,17 @@ func scanActivity(scanner activityScanner) (store.ActivityLogEntry, error) {
 		&entry.DurationMs,
 		&entry.ErrorMsg,
 		&metadataJSON,
+		&endMs,
 	); err != nil {
 		return store.ActivityLogEntry{}, fmt.Errorf("scan activity: %w", err)
 	}
-	entry.Timestamp = time.Unix(ts, 0)
+	// ts_end_ms carries the milliseconds ts_created drops; the UI needs them to
+	// tell whether two decodes overlapped. 0 only on a row never migrated.
+	if endMs > 0 {
+		entry.Timestamp = time.UnixMilli(endMs)
+	} else {
+		entry.Timestamp = time.Unix(ts, 0)
+	}
 	if metadataJSON != "" {
 		if err := json.Unmarshal([]byte(metadataJSON), &entry.Metadata); err != nil {
 			return store.ActivityLogEntry{}, fmt.Errorf("unmarshal activity metadata: %w", err)

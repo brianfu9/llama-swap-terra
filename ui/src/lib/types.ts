@@ -217,6 +217,11 @@ export interface GenScatterPoint {
   end_ms?: number;
   /** llama-server predicted_ms; <= 0 when unreported. */
   decode_ms?: number;
+  /**
+   * UI-only, never sent by the server: the reported per-request speed, kept
+   * when `speed` has been replaced by the system rate (see lib/concurrency).
+   */
+  stream_speed?: number;
 }
 
 export interface ActivityStatsData {

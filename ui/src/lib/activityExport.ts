@@ -3,6 +3,7 @@
 
 import type { ActivityLogEntry } from "./types";
 import { formatAbsoluteTime, formatDuration, formatOptionalDuration, formatSpeed } from "./format";
+import { buildConcurrency } from "./concurrency";
 
 /** Format a draft acceptance rate as "p% (accepted/drafted)". */
 export function formatDrafted(drafted: number, accepted: number): string {
@@ -21,8 +22,17 @@ export interface ActivitySummary {
   draftAccTokens: number;
   /** Token-weighted average, or -1 when no row reported a usable speed. */
   promptPerSecond: number;
-  /** Token-weighted average, or -1 when no row reported a usable speed. */
+  /**
+   * System decode rate: output tokens / wall-clock time with any decode
+   * running, or -1 when no row reported a usable speed. Overlapping requests
+   * share that time, so parallel agents raise this rather than lower it.
+   */
   tokensPerSecond: number;
+  /**
+   * Token-weighted per-request average (output tokens / summed decode time),
+   * or -1. Equal to tokensPerSecond when no decodes overlapped.
+   */
+  perStreamTokensPerSecond: number;
   /** Timestamp of the oldest row, or "" when there are none. */
   startedAt: string;
   /** Timestamp of the newest row, or "" when there are none. */
@@ -48,6 +58,7 @@ export function summarizeActivity(rows: ActivityLogEntry[]): ActivitySummary {
     draftAccTokens: 0,
     promptPerSecond: -1,
     tokensPerSecond: -1,
+    perStreamTokensPerSecond: -1,
     startedAt: "",
     endedAt: "",
   };
@@ -56,6 +67,7 @@ export function summarizeActivity(rows: ActivityLogEntry[]): ActivitySummary {
   let promptSeconds = 0;
   let genTokens = 0;
   let genSeconds = 0;
+  const decodes: { endMs: number; decodeMs: number; output: number; speed: number }[] = [];
   // The rows arrive in whatever order the table is sorted by, so the range is
   // tracked by parsed time rather than by taking the first and last row.
   let startedMs = Infinity;
@@ -88,11 +100,31 @@ export function summarizeActivity(rows: ActivityLogEntry[]): ActivitySummary {
     if (row.tokens.output_tokens > 0 && row.tokens.tokens_per_second > 0) {
       genTokens += row.tokens.output_tokens;
       genSeconds += row.tokens.output_tokens / row.tokens.tokens_per_second;
+      // Place the decode on the wall clock; the row's timestamp is when the
+      // response finished. Without predicted_ms, derive the decode time from
+      // the reported speed, which is exactly what genSeconds already assumes.
+      const decodeMs =
+        row.tokens.predicted_ms > 0
+          ? row.tokens.predicted_ms
+          : (row.tokens.output_tokens / row.tokens.tokens_per_second) * 1000;
+      decodes.push({
+        endMs: rowMs,
+        decodeMs,
+        output: row.tokens.output_tokens,
+        speed: row.tokens.tokens_per_second,
+      });
     }
   }
 
   if (promptSeconds > 0) summary.promptPerSecond = promptTokens / promptSeconds;
-  if (genSeconds > 0) summary.tokensPerSecond = genTokens / genSeconds;
+  if (genSeconds > 0) {
+    summary.perStreamTokensPerSecond = genTokens / genSeconds;
+    // Rows with an unparseable timestamp cannot be placed; fall back to the
+    // per-stream rate rather than report a system rate over part of the data.
+    const placed = buildConcurrency(decodes);
+    summary.tokensPerSecond =
+      placed.untimed === 0 && placed.systemTps > 0 ? placed.systemTps : summary.perStreamTokensPerSecond;
+  }
 
   return summary;
 }
@@ -148,6 +180,16 @@ export function activityCellText(row: ActivityLogEntry, columnId: string): strin
 }
 
 /**
+ * The Generated speed: the system rate, plus the per-stream rate when decodes
+ * overlapped enough for the two to differ at the precision shown.
+ */
+function generatedSpeed(summary: ActivitySummary): string {
+  const system = formatSpeed(summary.tokensPerSecond);
+  const perStream = formatSpeed(summary.perStreamTokensPerSecond);
+  return perStream === system ? system : `${system} system, ${perStream} per stream`;
+}
+
+/**
  * Render the page totals as a two-column markdown table. Speeds are annotated
  * in parentheses next to the token counts they describe.
  */
@@ -174,7 +216,7 @@ export function summaryMarkdown(summary: ActivitySummary): string {
     ],
     [
       "Generated",
-      `${summary.outputTokens.toLocaleString()} (${formatSpeed(summary.tokensPerSecond)})`,
+      `${summary.outputTokens.toLocaleString()} (${generatedSpeed(summary)})`,
     ],
     ["Drafted", drafted],
   ];

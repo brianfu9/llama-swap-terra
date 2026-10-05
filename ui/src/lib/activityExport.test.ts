@@ -65,6 +65,7 @@ describe("summarizeActivity", () => {
       draftAccTokens: 0,
       promptPerSecond: -1,
       tokensPerSecond: -1,
+      perStreamTokensPerSecond: -1,
       startedAt: "",
       endedAt: "",
     });
@@ -369,3 +370,36 @@ describe("buildActivityMarkdown", () => {
     );
   });
 });
+
+describe("summarizeActivity concurrency", () => {
+  // Two 10s decodes at 20 tok/s that fully overlap: each stream is slow, the
+  // system made 400 tokens in 10s.
+  const overlapped = (id: number) =>
+    entry({
+      id,
+      timestamp: new Date(Date.UTC(2026, 9, 4, 12, 0, 10)).toISOString(),
+      tokens: {
+        cache_tokens: 0,
+        draft_tokens: 0,
+        draft_acc_tokens: 0,
+        input_tokens: 10,
+        output_tokens: 200,
+        prompt_per_second: -1,
+        tokens_per_second: 20,
+        prompt_ms: -1,
+        predicted_ms: 10000,
+      },
+    });
+
+  it("reports the system rate over union time, not the per-stream average", () => {
+    const summary = summarizeActivity([overlapped(1), overlapped(2)]);
+    expect(summary.tokensPerSecond).toBeCloseTo(40, 6);
+    expect(summary.perStreamTokensPerSecond).toBeCloseTo(20, 6);
+  });
+
+  it("shows both rates in the markdown when they differ", () => {
+    const md = summaryMarkdown(summarizeActivity([overlapped(1), overlapped(2)]));
+    expect(md).toContain("| Generated | 400 (40.00 t/s system, 20.00 t/s per stream) |");
+  });
+});
+

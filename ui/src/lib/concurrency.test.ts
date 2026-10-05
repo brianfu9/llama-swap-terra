@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildConcurrency, buildSystemDecodeTime } from "./concurrency";
+import { buildConcurrency } from "./concurrency";
 
 // A decode of `output` tokens at `speed` tok/s that finished at endMs.
 const decode = (endMs: number, decodeMs: number, output: number) => ({
@@ -77,20 +77,21 @@ describe("buildConcurrency", () => {
     expect(data.levels[0].k).toBe(2);
     expect(data.levels[0].speedup).toBe(0);
   });
-});
 
-describe("buildSystemDecodeTime", () => {
-  it("weights system rates by busy time", () => {
-    const data = buildConcurrency([
-      decode(2000, 2000, 100),
-      decode(6000, 4000, 140),
-      decode(6000, 4000, 140),
-    ]);
-    const hist = buildSystemDecodeTime(data, 2);
-    expect(hist.totalSeconds).toBeCloseTo(6, 6);
-    // 50 tok/s for 2s, 70 tok/s for 4s.
-    expect(hist.bins[0].seconds).toBeCloseTo(2, 6);
-    expect(hist.bins[1].seconds).toBeCloseTo(4, 6);
-    expect(hist.p50).toBeCloseTo(70, 6);
+  it("gives each request the system rate averaged over its own decode", () => {
+    // A runs 0..4000 alone at 50 tok/s for 3000ms, then shares 1000ms with B.
+    // B runs 3000..5000: 1000ms shared, 1000ms alone, 50 tok/s.
+    const untimed = { endMs: 0, decodeMs: -1, output: 10, speed: 33 };
+    const data = buildConcurrency([decode(4000, 4000, 200), untimed, decode(5000, 2000, 100)]);
+    // Shared stretch: 50 + 50 = 100 tok/s.
+    expect(data.systemSpeeds).toHaveLength(3);
+    expect(data.systemSpeeds[0]).toBeCloseTo((3000 * 50 + 1000 * 100) / 4000, 6);
+    expect(Number.isNaN(data.systemSpeeds[1])).toBe(true);
+    expect(data.systemSpeeds[2]).toBeCloseTo((1000 * 100 + 1000 * 50) / 2000, 6);
+  });
+
+  it("leaves a solo request at its reported speed", () => {
+    const data = buildConcurrency([{ endMs: 1000, decodeMs: 1000, output: 50, speed: 49.7 }]);
+    expect(data.systemSpeeds[0]).toBe(49.7);
   });
 });
