@@ -56,8 +56,8 @@ func (r *activityRepository) Insert(ctx context.Context, entry store.ActivityLog
 			ts_created, src, model_id, req_path, resp_content_type, resp_status_code,
 			cache_tokens, draft_tokens, draft_acc_tokens, input_tokens, output_tokens,
 			prompt_per_second, tokens_per_second, prompt_ms, predicted_ms, duration_ms, error_msg, metadata_json,
-			task, route, peer_id, reasoning_tokens, capture_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			task, route, peer_id, reasoning_tokens, capture_id, ts_end_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.Timestamp.Unix(),
 		entry.Src,
 		entry.Model,
@@ -81,6 +81,7 @@ func (r *activityRepository) Insert(ctx context.Context, entry store.ActivityLog
 		entry.PeerID,
 		entry.Tokens.ReasoningTokens,
 		entry.CaptureID,
+		entry.Timestamp.UnixMilli(),
 	)
 	if err != nil {
 		return store.ActivityLogEntry{}, fmt.Errorf("insert activity: %w", err)
@@ -222,6 +223,7 @@ func (r *activityRepository) speedValues(ctx context.Context, where string, args
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT prompt_per_second, tokens_per_second, input_tokens, cache_tokens,
                output_tokens, draft_tokens, draft_acc_tokens, prompt_ms,
+               predicted_ms, ts_end_ms,
                CASE WHEN json_valid(metadata_json)
                     THEN COALESCE(json_extract(metadata_json, '$.session'), '')
                     ELSE '' END
@@ -233,9 +235,10 @@ func (r *activityRepository) speedValues(ctx context.Context, where string, args
 
 	for rows.Next() {
 		var promptValue, genValue float64
-		var inputTokens, cacheTokens, outputTokens, draftTokens, draftAccTokens, promptMs int
+		var inputTokens, cacheTokens, outputTokens, draftTokens, draftAccTokens, promptMs, predictedMs int
+		var endMs int64
 		var session string
-		if err := rows.Scan(&promptValue, &genValue, &inputTokens, &cacheTokens, &outputTokens, &draftTokens, &draftAccTokens, &promptMs, &session); err != nil {
+		if err := rows.Scan(&promptValue, &genValue, &inputTokens, &cacheTokens, &outputTokens, &draftTokens, &draftAccTokens, &promptMs, &predictedMs, &endMs, &session); err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("activity histogram row: %w", err)
 		}
 		if promptValue > 0 {
@@ -258,11 +261,13 @@ func (r *activityRepository) speedValues(ctx context.Context, where string, args
 					accept = float64(draftAccTokens) / float64(draftTokens)
 				}
 				genScatter = append(genScatter, store.GenScatterPoint{
-					Context: context,
-					Speed:   genValue,
-					Accept:  accept,
-					Output:  outputTokens,
-					Session: session,
+					Context:  context,
+					Speed:    genValue,
+					Accept:   accept,
+					Output:   outputTokens,
+					Session:  session,
+					EndMs:    endMs,
+					DecodeMs: predictedMs,
 				})
 			}
 		}

@@ -190,13 +190,18 @@ type PromptScatterPoint struct {
 
 // GenScatterPoint is one completed request's decode speed against the
 // context it was generating over. Accept is the draft acceptance rate,
-// or -1 when the request reported no draft tokens.
+// or -1 when the request reported no draft tokens. EndMs (unix ms) and
+// DecodeMs (llama-server's predicted_ms, -1 when unreported) place the decode
+// on the wall clock as [EndMs-DecodeMs, EndMs], so the UI can measure how
+// many decodes overlapped and what the system as a whole produced.
 type GenScatterPoint struct {
-	Context int     `json:"context"`
-	Speed   float64 `json:"speed"`
-	Accept  float64 `json:"accept"`
-	Output  int     `json:"output"`
-	Session string  `json:"session,omitempty"`
+	Context  int     `json:"context"`
+	Speed    float64 `json:"speed"`
+	Accept   float64 `json:"accept"`
+	Output   int     `json:"output"`
+	Session  string  `json:"session,omitempty"`
+	EndMs    int64   `json:"end_ms"`
+	DecodeMs int     `json:"decode_ms"`
 }
 
 // HistogramData is a binned distribution with percentile summaries.

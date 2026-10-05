@@ -1,12 +1,28 @@
 <script lang="ts">
-  import { buildPrefillTime, type PrefillSample } from "../lib/prefillTime";
+  import { buildPrefillTime, type PrefillSample, type PrefillTimeData } from "../lib/prefillTime";
   import { formatCompact } from "../lib/format";
 
+  // Also renders the time-weighted system decode histogram: pass prebuilt
+  // `binned` data plus the decode wording. `countNoun: null` hides per-bin
+  // counts, which mean nothing when the samples are stretches of wall clock
+  // rather than requests. `mean` draws one extra marker (green).
   let {
-    samples,
+    samples = [],
+    binned,
+    noun = "prefill",
+    xLabel = "Prefill speed (tokens/sec)",
+    countNoun = "requests",
+    mean = 0,
+    meanLabel = "mean",
     colorClass = "text-blue-500 dark:text-blue-400",
   }: {
-    samples: PrefillSample[];
+    samples?: PrefillSample[];
+    binned?: PrefillTimeData;
+    noun?: string;
+    xLabel?: string;
+    countNoun?: string | null;
+    mean?: number;
+    meanLabel?: string;
     colorClass?: string;
   } = $props();
 
@@ -16,7 +32,7 @@
   const chartWidth = viewBoxWidth - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
-  let data = $derived(buildPrefillTime(samples));
+  let data = $derived(binned ?? buildPrefillTime(samples));
   let barWidth = $derived(data.bins.length > 0 ? chartWidth / data.bins.length : chartWidth);
 
   /** Roughly the width one tick label needs in viewBox units. */
@@ -92,8 +108,8 @@
   {#if data.bins.length === 0}
     <div class="text-muted-foreground py-6 text-center text-sm">
       {data.untimed > 0
-        ? `No prefill timings yet (${formatCompact(data.untimed)} requests without timing data)`
-        : "No prefill timing data yet"}
+        ? `No ${noun} timings yet (${formatCompact(data.untimed)} requests without timing data)`
+        : `No ${noun} timing data yet`}
     </div>
   {:else}
     <svg
@@ -101,7 +117,7 @@
       class="w-full h-auto"
       preserveAspectRatio="xMidYMid meet"
       role="img"
-      aria-label="Total prefill seconds by prefill speed"
+      aria-label={`Total ${noun} seconds by ${xLabel}`}
     >
       <!-- Y-axis -->
       <line
@@ -167,7 +183,7 @@
               : 'opacity-60 group-hover:opacity-90'} transition-opacity cursor-pointer"
           />
           <title
-            >{`${rangeLabel(i)}\n${secondsLabel(bin.seconds)} total prefill (${(bin.share * 100).toFixed(1)}%)\n${bin.count} requests, ${secondsLabel(bin.meanSeconds)} each`}</title
+            >{`${rangeLabel(i)}\n${secondsLabel(bin.seconds)} total ${noun} (${(bin.share * 100).toFixed(1)}%)${countNoun ? `\n${bin.count} ${countNoun}, ${secondsLabel(bin.meanSeconds)} each` : ""}`}</title
           >
           <rect
             {x}
@@ -178,7 +194,7 @@
             role="button"
             tabindex={0}
             aria-pressed={selectedBin === i}
-            aria-label={`${rangeLabel(i)}, ${secondsLabel(bin.seconds)} total prefill, ${bin.count} requests`}
+            aria-label={`${rangeLabel(i)}, ${secondsLabel(bin.seconds)} total ${noun}${countNoun ? `, ${bin.count} ${countNoun}` : ""}`}
             class="cursor-pointer"
             onclick={() => selectBin(i)}
             onkeydown={(e) => {
@@ -207,6 +223,18 @@
           />
         {/if}
       {/each}
+      {#if mean > 0}
+        <line
+          x1={speedX(mean)}
+          y1={padding.top}
+          x2={speedX(mean)}
+          y2={height - padding.bottom}
+          stroke="currentColor"
+          stroke-width="3"
+          opacity="0.9"
+          class="text-green-600 dark:text-green-400"
+        />
+      {/if}
 
       <!-- X-axis ticks: one per bin edge, thinned to whatever fits the width -->
       {#each tickIndexes as index}
@@ -243,7 +271,7 @@
         opacity="0.7"
         text-anchor="middle"
       >
-        Prefill speed (tokens/sec)
+        {xLabel}
       </text>
       <text
         x={22}
@@ -254,7 +282,7 @@
         opacity="0.7"
         text-anchor="middle"
       >
-        % of prefill time
+        % of {noun} time
       </text>
     </svg>
 
@@ -271,11 +299,17 @@
         <span class="w-5 border-t-2 border-dashed border-red-500 dark:border-red-400"></span>
         p1 ({formatCompact(data.p1)} tps)
       </span>
-      <span title="Percentiles are weighted by prefill time, not request count">by time</span>
+      {#if mean > 0}
+        <span class="inline-flex items-center gap-1.5">
+          <span class="w-5 border-t-[3px] border-green-600 dark:border-green-400"></span>
+          {meanLabel} ({formatCompact(mean)} tps)
+        </span>
+      {/if}
+      <span title={`Percentiles are weighted by ${noun} time, not request count`}>by time</span>
     </div>
     <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
       {#if data.untimed > 0}
-        <span title="Requests with no llama-server prompt_ms; excluded from the totals above">
+        <span title="Requests with no llama-server timing; excluded from the totals above">
           {formatCompact(data.untimed)} untimed
         </span>
       {/if}
@@ -283,9 +317,8 @@
         {@const bin = data.bins[selectedBin]}
         <span class="ml-auto">{rangeLabel(selectedBin)}</span>
         <span>
-          {secondsLabel(bin.seconds)} ({(bin.share * 100).toFixed(1)}%) · {bin.count} req · {secondsLabel(
-            bin.meanSeconds,
-          )} each
+          {secondsLabel(bin.seconds)} ({(bin.share * 100).toFixed(1)}%){#if countNoun}
+            · {bin.count} req · {secondsLabel(bin.meanSeconds)} each{/if}
         </span>
       {/if}
     </div>

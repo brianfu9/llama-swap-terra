@@ -6,6 +6,8 @@
   import PrefillTimeHistogram from "./PrefillTimeHistogram.svelte";
   import PromptPrefillScatter from "./PromptPrefillScatter.svelte";
   import DecodeScatter from "./DecodeScatter.svelte";
+  import ConcurrencyHeat from "./ConcurrencyHeat.svelte";
+  import { buildConcurrency, buildSystemDecodeTime } from "../lib/concurrency";
   import { ChevronDown, X } from "@lucide/svelte";
   import * as Card from "$lib/components/ui/card/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -35,6 +37,20 @@
   const nf = new Intl.NumberFormat();
   const histogramCollapsed = persistentStore<boolean>("activity-histogram-collapsed", false);
   const scatterColorMode = persistentStore<"session" | "accept">("activity-scatter-color", "session");
+
+  // Per-stream decode speed drops when agents run in parallel; these measure
+  // what the system as a whole produced. See lib/concurrency.ts.
+  const concurrency = $derived(
+    buildConcurrency(
+      (stats?.gen_scatter ?? []).map((p) => ({
+        endMs: p.end_ms,
+        decodeMs: p.decode_ms,
+        output: p.output,
+        speed: p.speed,
+      })),
+    ),
+  );
+  const systemDecode = $derived(buildSystemDecodeTime(concurrency));
 </script>
 
 <Card.Root class="relative p-3">
@@ -119,6 +135,51 @@
         {/if}
       </div>
     </div>
+    {#if concurrency.timed > 0}
+      <div class="mt-3">
+        <div class="text-muted-foreground mb-1 flex flex-wrap items-baseline gap-x-4 text-sm">
+          <span class="font-medium">Parallel Decode</span>
+          <span title="Output tokens ÷ wall-clock time with any decode running">
+            system <span class="text-foreground font-semibold">{formatCompact(concurrency.systemTps)}</span> tok/s
+          </span>
+          <span title="Output tokens ÷ summed per-request decode time">
+            per-stream {formatCompact(concurrency.perStreamTps)} tok/s
+          </span>
+          <span title="Summed decode time ÷ wall-clock time with any decode running">
+            avg {concurrency.meanConcurrency.toFixed(2)}× concurrent
+          </span>
+          {#if concurrency.levels.length > 1}
+            <span>
+              {concurrency.levels
+                .filter((l) => l.k > 1 && l.speedup > 0)
+                .map((l) => `${l.k}: ${l.speedup.toFixed(2)}×`)
+                .join(" · ")}
+            </span>
+          {/if}
+        </div>
+        {#if concurrency.maxK > 1}
+          <div class="flex flex-col gap-4 sm:flex-row">
+            <div class="w-full min-w-0 sm:w-1/2">
+              <ConcurrencyHeat data={concurrency} />
+            </div>
+            <div class="w-full min-w-0 sm:w-1/2">
+              <PrefillTimeHistogram
+                binned={systemDecode}
+                noun="busy"
+                xLabel="System decode (tokens/sec, all streams)"
+                countNoun={null}
+                mean={concurrency.systemTps}
+                colorClass="text-green-600 dark:text-green-500"
+              />
+            </div>
+          </div>
+        {:else}
+          <div class="text-muted-foreground py-2 text-sm">
+            No decodes have overlapped yet, so system and per-stream rates are equal.
+          </div>
+        {/if}
+      </div>
+    {/if}
   {/if}
   <div class="grid grid-cols-4 gap-x-6 gap-y-1 text-sm">
     <div class="text-muted-foreground text-xs uppercase tracking-wider">Requests</div>
