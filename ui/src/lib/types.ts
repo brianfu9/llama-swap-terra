@@ -213,6 +213,10 @@ export interface GenScatterPoint {
   accept: number; // 0..1, or -1 when the request reported no draft tokens
   output: number;
   session?: string;
+  /** Unix ms the response finished. */
+  end_ms?: number;
+  /** llama-server predicted_ms; <= 0 when unreported. */
+  decode_ms?: number;
 }
 
 export interface ActivityStatsData {

@@ -294,7 +294,7 @@ func TestStore_ActivityStats(t *testing.T) {
 
 	entries := []store.ActivityLogEntry{
 		{
-			Timestamp: time.Unix(1, 0),
+			Timestamp: time.UnixMilli(1250),
 			Model:     "m1",
 			Metadata:  map[string]string{"session": "ses_test1"},
 			Tokens: store.TokenMetrics{
@@ -304,6 +304,7 @@ func TestStore_ActivityStats(t *testing.T) {
 				PromptPerSecond: 100,
 				TokensPerSecond: 50,
 				PromptMs:        250,
+				PredictedMs:     400,
 				DraftTokens:     10,
 				DraftAccTokens:  7,
 			},
@@ -396,6 +397,10 @@ func TestStore_ActivityStats(t *testing.T) {
 	}
 	if got.Accept != 0.7 {
 		t.Errorf("gen scatter[12] accept = %v, want 0.7 (7/10)", got.Accept)
+	}
+	// ts_end_ms keeps the millisecond part ts_created drops.
+	if got.EndMs != 1250 || got.DecodeMs != 400 {
+		t.Errorf("gen scatter[12] end_ms/decode_ms = %d/%d, want 1250/400", got.EndMs, got.DecodeMs)
 	}
 	got, ok = genByContext[4]
 	if !ok {
