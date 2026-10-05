@@ -16,35 +16,33 @@
     type HeatGrid,
   } from "../lib/heatmap";
   import {
-    acceptColor,
-    densityAlpha,
     densityThresholds,
     densityColor,
     densityRamp,
     latestSession,
     shortSession,
-    withAlpha,
-    ACCEPT_RAMP_DARK,
-    ACCEPT_RAMP_LIGHT,
     LATEST_DARK,
     LATEST_LIGHT,
-    OTHER_DARK,
-    OTHER_LIGHT,
   } from "../lib/scatterColor";
 
   Chart.register(ScatterController, PointElement, LinearScale, Title, Tooltip, heatmapPlugin);
 
   interface Props {
     points: GenScatterPoint[];
-    colorMode: "session" | "accept";
+    /** Chart title and y-axis label; the system-rate view relabels both. */
+    title?: string;
+    yLabel?: string;
   }
 
-  let { points, colorMode }: Props = $props();
+  let {
+    points,
+    title = "Decode Speed vs Context Length",
+    yLabel = "Decode speed (tokens/sec)",
+  }: Props = $props();
 
   let canvas: HTMLCanvasElement;
   let chart: Chart<"scatter">;
 
-  const BUCKET_LABELS = ["<0.5", "0.5–0.6", "0.6–0.7", "0.7–0.8", ">=0.8"];
 
   let latest = $derived(latestSession(points.map((p) => p.session ?? "")));
   let overlay = $derived(latest === "" ? [] : points.filter((p) => (p.session ?? "") === latest));
@@ -54,14 +52,6 @@
       { xScale: "linear", ...gridSize(points.length, axisFill(points.map((p) => p.speed))) },
     ),
   );
-
-  function acceptSwatches(dark: boolean) {
-    const ramp = dark ? ACCEPT_RAMP_DARK : ACCEPT_RAMP_LIGHT;
-    return [
-      ...BUCKET_LABELS.map((label, i) => ({ label, color: ramp[i] })),
-      { label: "no draft data", color: dark ? OTHER_DARK : OTHER_LIGHT },
-    ];
-  }
 
   function getChartColors(dark: boolean) {
     return {
@@ -75,20 +65,12 @@
     };
   }
 
-  /**
-   * Cell fill. In density mode the count drives the blue ramp directly; in
-   * acceptance mode the hue carries mean acceptance and the count moves to
-   * the alpha channel, so both encodings survive in one layer.
-   */
-  // Ramp steps are assigned by rank, so each shade carries a comparable slice
+  // Cell fill: the count drives the blue density ramp. Ramp steps are assigned by rank, so each shade carries a comparable slice
   // of the cells whatever the distribution looks like. See densityThresholds.
   let thresholds = $derived(densityThresholds(grid.cells.map((c) => c.count)));
 
-  function cellColorFor(bounds: number[], dark: boolean, mode: "session" | "accept") {
-    return (cell: HeatCell) => {
-      if (mode !== "accept") return densityColor(cell.count, bounds, dark);
-      return withAlpha(acceptColor(cell.accept, dark), densityAlpha(cell.count, bounds));
-    };
+  function cellColorFor(bounds: number[], dark: boolean) {
+    return (cell: HeatCell) => densityColor(cell.count, bounds, dark);
   }
 
   function cellOf(item: TooltipItem<"scatter">): HeatCell | undefined {
@@ -118,7 +100,7 @@
         legend: { display: false },
         title: {
           display: true,
-          text: "Decode Speed vs Context Length",
+          text: title,
           color: colors.legend,
           font: { size: 14, weight: "bold" as const },
         },
@@ -143,6 +125,9 @@
               const point = overlayPointOf(item);
               if (point) {
                 const lines = [`${point.speed.toFixed(1)} tokens/sec`];
+                if (point.stream_speed !== undefined && point.stream_speed !== point.speed) {
+                  lines.push(`${point.stream_speed.toFixed(1)} tokens/sec per stream`);
+                }
                 lines.push(
                   point.accept < 0
                     ? "no draft data"
@@ -188,7 +173,7 @@
           beginAtZero: true,
           ticks: { color: colors.tick, font: { size: 10 } },
           grid: { color: colors.grid },
-          title: { display: true, text: "Decode speed (tokens/sec)", color: colors.tick },
+          title: { display: true, text: yLabel, color: colors.tick },
         },
       },
     };
@@ -224,9 +209,9 @@
     return { datasets };
   }
 
-  function sync(dark: boolean, mode: "session" | "accept", heat: HeatGrid, bounds: number[]) {
+  function sync(dark: boolean, heat: HeatGrid, bounds: number[]) {
     if (!chart) return;
-    setHeatmapState(chart, { grid: heat, colorFor: cellColorFor(bounds, dark, mode) });
+    setHeatmapState(chart, { grid: heat, colorFor: cellColorFor(bounds, dark) });
     chart.options = buildOptions(dark) as typeof chart.options;
     chart.data = buildData(dark, heat) as typeof chart.data;
     chart.update("none");
@@ -240,7 +225,7 @@
     });
     setHeatmapState(chart, {
       grid,
-      colorFor: cellColorFor(thresholds, $isDarkMode, colorMode),
+      colorFor: cellColorFor(thresholds, $isDarkMode),
     });
     chart.update("none");
 
@@ -250,7 +235,7 @@
   });
 
   $effect(() => {
-    sync($isDarkMode, colorMode, grid, thresholds);
+    sync($isDarkMode, grid, thresholds);
   });
 </script>
 
@@ -260,15 +245,6 @@
       <canvas bind:this={canvas}></canvas>
     </div>
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-      {#if colorMode === "accept"}
-        {#each acceptSwatches($isDarkMode) as swatch (swatch.label)}
-          <span class="flex items-center gap-1">
-            <span class="inline-block size-2 rounded-sm" style="background: {swatch.color}"></span>
-            <span class="text-muted-foreground text-xs">{swatch.label}</span>
-          </span>
-        {/each}
-        <span class="text-muted-foreground text-xs">(shade: cell density)</span>
-      {:else}
         <span class="flex items-center gap-1">
           <span class="text-muted-foreground text-xs">1</span>
           {#each densityRamp($isDarkMode) as step (step)}
@@ -281,7 +257,6 @@
             {formatCompact(grid.maxCount)} req/cell
           </span>
         </span>
-      {/if}
       {#if overlay.length > 0}
         <span class="flex items-center gap-1">
           <span

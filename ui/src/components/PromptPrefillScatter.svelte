@@ -45,11 +45,6 @@
 
   interface Props {
     points: PromptScatterPoint[];
-    /**
-     * Accepted for parity with the decode chart's toggle, but prefill requests
-     * carry no draft acceptance, so this chart is always density-colored.
-     */
-    colorMode: "session" | "accept";
   }
 
   let { points }: Props = $props();

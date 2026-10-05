@@ -7,7 +7,8 @@
   import PromptPrefillScatter from "./PromptPrefillScatter.svelte";
   import DecodeScatter from "./DecodeScatter.svelte";
   import ConcurrencyHeat from "./ConcurrencyHeat.svelte";
-  import { buildConcurrency, buildSystemDecodeTime } from "../lib/concurrency";
+  import { buildConcurrency } from "../lib/concurrency";
+  import { buildHistogram } from "../lib/histogram";
   import { ChevronDown, X } from "@lucide/svelte";
   import * as Card from "$lib/components/ui/card/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -36,7 +37,6 @@
 
   const nf = new Intl.NumberFormat();
   const histogramCollapsed = persistentStore<boolean>("activity-histogram-collapsed", false);
-  const scatterColorMode = persistentStore<"session" | "accept">("activity-scatter-color", "session");
 
   // Per-stream decode speed drops when agents run in parallel; these measure
   // what the system as a whole produced. See lib/concurrency.ts.
@@ -50,19 +50,29 @@
       })),
     ),
   );
-  const systemDecode = $derived(buildSystemDecodeTime(concurrency));
+
+  // Which speed the Token Generation heat map and histogram plot. "system"
+  // replaces each request's reported speed with the system rate over its own
+  // decode, so overlapping agents no longer read as a slowdown; solo requests
+  // are unchanged. Requests with no decode timing keep their reported speed.
+  const decodeSpeedMode = persistentStore<"system" | "stream">("activity-decode-speed", "system");
+  const genPoints = $derived.by(() => {
+    const points = stats?.gen_scatter ?? [];
+    if ($decodeSpeedMode !== "system") return points;
+    return points.map((p, i) => {
+      const system = concurrency.systemSpeeds[i];
+      return Number.isFinite(system) ? { ...p, speed: system, stream_speed: p.speed } : p;
+    });
+  });
+  // The server's gen_histogram bins reported speeds, so the system view bins
+  // in the browser. It covers the scatter's rows (those with a context), which
+  // can be a few fewer than the server histogram's.
+  const genHistogram = $derived(
+    $decodeSpeedMode === "system" ? buildHistogram(genPoints.map((p) => p.speed)) : (stats?.gen_histogram ?? null),
+  );
 </script>
 
 <Card.Root class="relative p-3">
-  <Button
-    variant="ghost"
-    size="xs"
-    class="text-muted-foreground absolute right-10 top-2"
-    onclick={() => ($scatterColorMode = $scatterColorMode === "session" ? "accept" : "session")}
-    title="Toggle scatter point coloring between session and draft acceptance rate"
-  >
-    Color: {$scatterColorMode === "session" ? "session" : "acceptance"}
-  </Button>
   <Button
     variant="ghost"
     size="icon-xs"
@@ -76,8 +86,8 @@
       <X />
     {/if}
   </Button>
-  <!-- pr-36 keeps the selector clear of the absolutely positioned buttons top-right. -->
-  <div class="mb-3 flex items-center gap-2 pr-36">
+  <!-- pr-10 keeps the selector clear of the absolutely positioned collapse button. -->
+  <div class="mb-3 flex items-center gap-2 pr-10">
     <span class="text-muted-foreground text-xs">Model</span>
     <Select.Root
       type="single"
@@ -105,7 +115,7 @@
       <div class="w-full min-w-0 sm:w-1/2">
         <div class="text-muted-foreground mb-1 text-sm font-medium">Prompt Processing</div>
         {#if stats?.prompt_scatter && stats.prompt_scatter.length > 0}
-          <PromptPrefillScatter points={stats.prompt_scatter} colorMode={$scatterColorMode} />
+          <PromptPrefillScatter points={stats.prompt_scatter} />
         {/if}
         {#if stats?.prompt_scatter && stats.prompt_scatter.length > 0}
           <!-- Weighted by time, not request count: counting requests is
@@ -119,15 +129,30 @@
         {/if}
       </div>
       <div class="w-full min-w-0 sm:w-1/2">
-        <div class="text-muted-foreground mb-1 text-sm font-medium">Token Generation</div>
-        {#if stats?.gen_scatter && stats.gen_scatter.length > 0}
-          <DecodeScatter points={stats.gen_scatter} colorMode={$scatterColorMode} />
+        <div class="text-muted-foreground mb-1 flex items-center gap-2 text-sm font-medium">
+          Token Generation
+          <Button
+            variant="ghost"
+            size="xs"
+            class="text-muted-foreground font-normal"
+            onclick={() => ($decodeSpeedMode = $decodeSpeedMode === "system" ? "stream" : "system")}
+            title="System: each request shows what the whole GPU produced during its decode, so parallel agents do not read as a slowdown. Per stream: the request's own reported speed."
+          >
+            Speed: {$decodeSpeedMode === "system" ? "system" : "per stream"}
+          </Button>
+        </div>
+        {#if genPoints.length > 0}
+          <DecodeScatter
+            points={genPoints}
+            title={$decodeSpeedMode === "system" ? "System Decode vs Context Length" : "Decode Speed vs Context Length"}
+            yLabel={$decodeSpeedMode === "system" ? "System decode during request (tokens/sec)" : "Decode speed (tokens/sec)"}
+          />
         {/if}
-        {#if stats?.gen_histogram}
+        {#if genHistogram}
           <TokenHistogram
-            data={stats.gen_histogram}
+            data={genHistogram}
             unit="tokens/sec"
-            xLabel="Decode speed (tokens/sec)"
+            xLabel={$decodeSpeedMode === "system" ? "System decode during request (tokens/sec)" : "Decode speed (tokens/sec)"}
             yLabel="Requests"
           />
         {:else}
@@ -158,20 +183,8 @@
           {/if}
         </div>
         {#if concurrency.maxK > 1}
-          <div class="flex flex-col gap-4 sm:flex-row">
-            <div class="w-full min-w-0 sm:w-1/2">
-              <ConcurrencyHeat data={concurrency} />
-            </div>
-            <div class="w-full min-w-0 sm:w-1/2">
-              <PrefillTimeHistogram
-                binned={systemDecode}
-                noun="busy"
-                xLabel="System decode (tokens/sec, all streams)"
-                countNoun={null}
-                mean={concurrency.systemTps}
-                colorClass="text-green-600 dark:text-green-500"
-              />
-            </div>
+          <div class="w-full min-w-0 sm:w-1/2">
+            <ConcurrencyHeat data={concurrency} />
           </div>
         {:else}
           <div class="text-muted-foreground py-2 text-sm">
@@ -197,6 +210,14 @@
     </div>
     <div class="text-sm" title={nf.format(stats?.total_output_tokens ?? 0)}>
       <span class="font-semibold">{formatCompact(stats?.total_output_tokens ?? 0)}</span> tokens
+      {#if concurrency.systemTps > 0}
+        <span
+          class="text-muted-foreground"
+          title={`System rate: output tokens ÷ wall-clock time with any decode running. Per stream: ${formatCompact(concurrency.perStreamTps)} tok/s.`}
+        >
+          · {formatCompact(concurrency.systemTps)} tok/s
+        </span>
+      {/if}
     </div>
   </div>
 </Card.Root>

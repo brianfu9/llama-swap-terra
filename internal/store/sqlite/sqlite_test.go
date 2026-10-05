@@ -560,3 +560,27 @@ func TestStore_ActivityStatsModels(t *testing.T) {
 		}
 	}
 }
+
+func TestStore_ListActivityKeepsMilliseconds(t *testing.T) {
+	ctx := context.Background()
+	st, err := New("")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := st.Activity().Insert(ctx, store.ActivityLogEntry{Timestamp: time.UnixMilli(1_700_000_000_250), Model: "m"}); err != nil {
+		t.Fatalf("InsertActivity: %v", err)
+	}
+	page, err := st.Activity().List(ctx, store.ActivityQuery{Limit: 10, Page: 1})
+	if err != nil {
+		t.Fatalf("ListActivity: %v", err)
+	}
+	if len(page.Data) != 1 {
+		t.Fatalf("rows = %d, want 1", len(page.Data))
+	}
+	// ts_created alone would round this down to ...000; overlap needs the 250ms.
+	if got := page.Data[0].Timestamp.UnixMilli(); got != 1_700_000_000_250 {
+		t.Errorf("timestamp ms = %d, want 1700000000250", got)
+	}
+}
