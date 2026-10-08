@@ -84,6 +84,9 @@ func New(path string) (*Store, error) {
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {
+	if err := renumberForkMigrations(ctx, db); err != nil {
+		return err
+	}
 	migrations, err := fs.Sub(migrationFS, "migrations")
 	if err != nil {
 		return fmt.Errorf("sqlite store migrations: %w", err)
