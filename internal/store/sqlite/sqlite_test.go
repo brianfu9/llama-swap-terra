@@ -563,7 +563,7 @@ func TestStore_ActivityStatsModels(t *testing.T) {
 
 func TestStore_ListActivityKeepsMilliseconds(t *testing.T) {
 	ctx := context.Background()
-	st, err := New("")
+	st, err := New("", "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -126,6 +126,11 @@ func openDB(ctx context.Context, path string, migrations fs.FS, dir string) (db 
 }
 
 func runMigrations(ctx context.Context, db *sql.DB, migrationsFS fs.FS, dir string) error {
+	if dir == "migrations" { // the activity database (terra fork, forklegacy.go)
+		if err := renumberForkMigrations(ctx, db); err != nil {
+			return err
+		}
+	}
 	migrations, err := fs.Sub(migrationsFS, dir)
 	if err != nil {
 		return fmt.Errorf("sqlite store migrations: %w", err)
