@@ -29,16 +29,9 @@
 
   interface Props {
     points: GenScatterPoint[];
-    /** Chart title and y-axis label; the system-rate view relabels both. */
-    title?: string;
-    yLabel?: string;
   }
 
-  let {
-    points,
-    title = "Decode Speed vs Context Length",
-    yLabel = "Decode speed (tokens/sec)",
-  }: Props = $props();
+  let { points }: Props = $props();
 
   let canvas: HTMLCanvasElement;
   let chart: Chart<"scatter">;
@@ -100,7 +93,7 @@
         legend: { display: false },
         title: {
           display: true,
-          text: title,
+          text: "Decode Speed vs Context Length",
           color: colors.legend,
           font: { size: 14, weight: "bold" as const },
         },
@@ -125,9 +118,6 @@
               const point = overlayPointOf(item);
               if (point) {
                 const lines = [`${point.speed.toFixed(1)} tokens/sec`];
-                if (point.stream_speed !== undefined && point.stream_speed !== point.speed) {
-                  lines.push(`${point.stream_speed.toFixed(1)} tokens/sec per stream`);
-                }
                 lines.push(
                   point.accept < 0
                     ? "no draft data"
@@ -173,7 +163,7 @@
           beginAtZero: true,
           ticks: { color: colors.tick, font: { size: 10 } },
           grid: { color: colors.grid },
-          title: { display: true, text: yLabel, color: colors.tick },
+          title: { display: true, text: "Decode speed (tokens/sec)", color: colors.tick },
         },
       },
     };
