@@ -8,7 +8,6 @@
   import DecodeScatter from "./DecodeScatter.svelte";
   import ConcurrencyHeat from "./ConcurrencyHeat.svelte";
   import { buildConcurrency } from "../lib/concurrency";
-  import { buildHistogram } from "../lib/histogram";
   import { ChevronDown, X } from "@lucide/svelte";
   import * as Card from "$lib/components/ui/card/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -49,26 +48,6 @@
         speed: p.speed,
       })),
     ),
-  );
-
-  // Which speed the Token Generation heat map and histogram plot. "system"
-  // replaces each request's reported speed with the system rate over its own
-  // decode, so overlapping agents no longer read as a slowdown; solo requests
-  // are unchanged. Requests with no decode timing keep their reported speed.
-  const decodeSpeedMode = persistentStore<"system" | "stream">("activity-decode-speed", "system");
-  const genPoints = $derived.by(() => {
-    const points = stats?.gen_scatter ?? [];
-    if ($decodeSpeedMode !== "system") return points;
-    return points.map((p, i) => {
-      const system = concurrency.systemSpeeds[i];
-      return Number.isFinite(system) ? { ...p, speed: system, stream_speed: p.speed } : p;
-    });
-  });
-  // The server's gen_histogram bins reported speeds, so the system view bins
-  // in the browser. It covers the scatter's rows (those with a context), which
-  // can be a few fewer than the server histogram's.
-  const genHistogram = $derived(
-    $decodeSpeedMode === "system" ? buildHistogram(genPoints.map((p) => p.speed)) : (stats?.gen_histogram ?? null),
   );
 </script>
 
@@ -129,30 +108,15 @@
         {/if}
       </div>
       <div class="w-full min-w-0 sm:w-1/2">
-        <div class="text-muted-foreground mb-1 flex items-center gap-2 text-sm font-medium">
-          Token Generation
-          <Button
-            variant="ghost"
-            size="xs"
-            class="text-muted-foreground font-normal"
-            onclick={() => ($decodeSpeedMode = $decodeSpeedMode === "system" ? "stream" : "system")}
-            title="System: each request shows what the whole GPU produced during its decode, so parallel agents do not read as a slowdown. Per stream: the request's own reported speed."
-          >
-            Speed: {$decodeSpeedMode === "system" ? "system" : "per stream"}
-          </Button>
-        </div>
-        {#if genPoints.length > 0}
-          <DecodeScatter
-            points={genPoints}
-            title={$decodeSpeedMode === "system" ? "System Decode vs Context Length" : "Decode Speed vs Context Length"}
-            yLabel={$decodeSpeedMode === "system" ? "System decode during request (tokens/sec)" : "Decode speed (tokens/sec)"}
-          />
+        <div class="text-muted-foreground mb-1 text-sm font-medium">Token Generation</div>
+        {#if stats?.gen_scatter && stats.gen_scatter.length > 0}
+          <DecodeScatter points={stats.gen_scatter} />
         {/if}
-        {#if genHistogram}
+        {#if stats?.gen_histogram}
           <TokenHistogram
-            data={genHistogram}
+            data={stats.gen_histogram}
             unit="tokens/sec"
-            xLabel={$decodeSpeedMode === "system" ? "System decode during request (tokens/sec)" : "Decode speed (tokens/sec)"}
+            xLabel="Decode speed (tokens/sec)"
             yLabel="Requests"
           />
         {:else}
