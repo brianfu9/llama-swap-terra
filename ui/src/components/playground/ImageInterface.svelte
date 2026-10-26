@@ -23,6 +23,13 @@
   const selectedSizeStore = persistentStore<string>("playground-image-size", "1024x1024");
   const apiModeStore = persistentStore<ImageApiMode>("playground-image-api-mode", "openai");
 
+  // terra fork: OpenAI-mode settings (Radiance's images API). 0 / -1 / "" leave the field to the model.
+  const oaNStore = persistentStore<number>("playground-image-n", 1);
+  const oaSeedStore = persistentStore<number>("playground-image-seed", -1);
+  const oaStepsStore = persistentStore<number>("playground-image-steps", 0);
+  const oaNegativeStore = persistentStore<string>("playground-image-negative", "");
+  const oaCfgStore = persistentStore<number>("playground-image-true-cfg", 0);
+
   // SDAPI persistent settings
   const sdNegativePromptStore = persistentStore<string>("playground-sdapi-negative-prompt", "");
   const sdStepsStore = persistentStore<number>("playground-sdapi-steps", 20);
@@ -112,16 +119,20 @@
           $selectedModelStore,
           trimmedPrompt,
           $selectedSizeStore,
-          signal
+          signal,
+          {
+            n: $oaNStore,
+            seed: $oaSeedStore,
+            steps: $oaStepsStore,
+            negativePrompt: $oaNegativeStore,
+            trueCfgScale: $oaCfgStore,
+          }
         );
 
         if (response.data && response.data.length > 0) {
-          const imageData = response.data[0];
-          if (imageData.b64_json) {
-            generatedImages = [`data:image/png;base64,${imageData.b64_json}`];
-          } else if (imageData.url) {
-            generatedImages = [imageData.url];
-          }
+          generatedImages = response.data
+            .map((d) => (d.b64_json ? `data:image/png;base64,${d.b64_json}` : d.url ?? ""))
+            .filter((u) => u !== "");
         }
       }
     });
@@ -229,12 +240,39 @@
       </Select.Content>
     </Select.Root>
 
-    {#if isSdapi}
-      <Button variant="outline" onclick={() => showSettings = !showSettings}>
-        {showSettings ? "Hide Settings" : "Settings"}
-      </Button>
-    {/if}
+    <Button variant="outline" onclick={() => showSettings = !showSettings}>
+      {showSettings ? "Hide Settings" : "Settings"}
+    </Button>
   </div>
+
+  <!-- terra fork: OpenAI-mode settings, for Radiance's Qwen-Image. Turbo runs a fixed 8 steps and refuses Steps;
+       a negative prompt plus True CFG above 1 runs guidance at twice the cost of a step. -->
+  {#if !isSdapi && showSettings}
+    <div class="shrink-0 mb-4 p-4 rounded-md border border-border bg-background">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">Pictures (n)</span>
+          <Input type="number" bind:value={$oaNStore} min="1" max="16" disabled={isGenerating} />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">Seed (-1 random)</span>
+          <Input type="number" bind:value={$oaSeedStore} min="-1" disabled={isGenerating} />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">Steps (0 = model default; not Turbo)</span>
+          <Input type="number" bind:value={$oaStepsStore} min="0" max="100" disabled={isGenerating} />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">True CFG (needs a negative prompt)</span>
+          <Input type="number" bind:value={$oaCfgStore} min="0" max="10" step="0.5" disabled={isGenerating} />
+        </label>
+      </div>
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-muted-foreground">Negative prompt</span>
+        <Textarea bind:value={$oaNegativeStore} rows={2} disabled={isGenerating} placeholder="what guidance steers away from" />
+      </label>
+    </div>
+  {/if}
 
   <!-- SDAPI Settings Panel -->
   {#if isSdapi && showSettings}
