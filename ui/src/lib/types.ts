@@ -482,6 +482,20 @@ export interface ImageGenerationRequest {
   prompt: string;
   n?: number;
   size?: string;
+  // terra fork: optional fields Radiance's images API takes (Qwen-Image); each is sent only when set.
+  seed?: number;
+  num_inference_steps?: number;
+  negative_prompt?: string;
+  true_cfg_scale?: number;
+}
+
+/** terra fork: the OpenAI-mode settings the Images tab can send; 0 / -1 / "" mean "leave it to the model". */
+export interface ImageGenerationOptions {
+  n?: number;
+  seed?: number;
+  steps?: number;
+  negativePrompt?: string;
+  trueCfgScale?: number;
 }
 
 export interface ImageGenerationResponse {
