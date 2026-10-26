@@ -16,7 +16,8 @@ function buildVideoFormData(
   formData.append("prompt", prompt);
   if (params.size) formData.append("size", params.size);
   if (params.seconds !== undefined) formData.append("seconds", String(params.seconds));
-  if (params.fps !== undefined) formData.append("fps", String(params.fps));
+  // terra fork: 0 or empty leaves fps to the backend; Radiance refuses an fps field outright.
+  if (params.fps !== undefined && params.fps !== null && Number(params.fps) > 0) formData.append("fps", String(params.fps));
   if (params.negativePrompt) formData.append("negative_prompt", params.negativePrompt);
   if (referenceFile) formData.append("input_reference", referenceFile);
 

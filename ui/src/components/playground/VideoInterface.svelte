@@ -20,9 +20,9 @@
   const selectedModelStore = iface.selectedModel;
   const busyStore = iface.busy;
   const error = iface.error;
-  const sizeStore = persistentStore<string>("playground-video-size", "1280x720");
+  const sizeStore = persistentStore<string>("playground-video-size", "960x544");
   const secondsStore = persistentStore<number>("playground-video-seconds", 5);
-  const fpsStore = persistentStore<number>("playground-video-fps", 24);
+  const fpsStore = persistentStore<number>("playground-video-fps-v2", 0);
   const modeStore = persistentStore<"async" | "sync">("playground-video-mode", "async");
   const negativePromptStore = persistentStore<string>("playground-video-negative-prompt", "");
   const advancedStore = persistentStore<string>("playground-video-advanced", "");
@@ -186,8 +186,7 @@
       bind:value={$selectedModelStore}
       placeholder="Select a video model..."
       disabled={isGenerating}
-      capabilities={["video_generation", "image_to_video", "video_to_video"]}
-      matchAny={true}
+      match={{ outputModalities: ["video"] }}
     />
 
     <Select.Root type="single" value={$modeStore} onValueChange={(v) => v && modeStore.set(v as "async" | "sync")}>
@@ -201,6 +200,16 @@
     <Select.Root type="single" value={$sizeStore} onValueChange={(v) => v && sizeStore.set(v)}>
       <Select.Trigger class="h-9 w-40">{$sizeStore}</Select.Trigger>
       <Select.Content>
+        <Select.Group>
+          <!-- terra fork: LTX-2.5 needs both sides a multiple of 32 (1664x896 is the largest under
+               RADIANCE_LTX_MAX_AREA_X=3; add latent_upscale: 2 in Advanced for the two-stage recipe). -->
+          <Select.Label>LTX-2.5 (sides multiple of 32)</Select.Label>
+          <Select.Item value="960x544">960x544 (native)</Select.Item>
+          <Select.Item value="1280x704">1280x704</Select.Item>
+          <Select.Item value="1664x896">1664x896 (max)</Select.Item>
+          <Select.Item value="544x960">544x960 (portrait)</Select.Item>
+        </Select.Group>
+        <Select.Separator />
         <Select.Group>
           <Select.Label>Landscape</Select.Label>
           <Select.Item value="1280x720">1280x720 (16:9)</Select.Item>
@@ -227,7 +236,7 @@
 
     <label class="flex items-center gap-1 text-sm">
       <span class="text-xs text-muted-foreground">FPS</span>
-      <Input type="number" class="h-9 w-16" bind:value={$fpsStore} min="1" max="60" />
+      <Input type="number" class="h-9 w-16" bind:value={$fpsStore} min="0" max="60" title="0 = the backend's own rate (Radiance refuses an fps field)" />
     </label>
   </div>
 

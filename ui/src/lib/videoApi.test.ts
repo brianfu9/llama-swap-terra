@@ -199,4 +199,15 @@ describe("generateVideoAsync", () => {
       })
     ).rejects.toThrow("Timed out waiting for video generation to complete");
   });
+
+  it("omits fps when it is 0 (terra fork: the backend picks its rate)", async () => {
+    const job: VideoJob = { id: "video-1", status: "queued" };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(job));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createVideoJob("my-model", "prompt", { fps: 0 });
+
+    const body = fetchMock.mock.calls[0][1].body as FormData;
+    expect(body.has("fps")).toBe(false);
+  });
 });
