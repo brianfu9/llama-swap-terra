@@ -200,38 +200,36 @@
     <Select.Root type="single" value={$sizeStore} onValueChange={(v) => v && sizeStore.set(v)}>
       <Select.Trigger class="h-9 w-40">{$sizeStore}</Select.Trigger>
       <Select.Content>
-        <Select.Group>
-          <!-- terra fork: LTX-2.5 needs both sides a multiple of 32 (1664x896 is the largest under
-               RADIANCE_LTX_MAX_AREA_X=3; add latent_upscale: 2 in Advanced for the two-stage recipe). -->
-          <Select.Label>LTX-2.5 (sides multiple of 32)</Select.Label>
-          <Select.Item value="960x544">960x544 (native)</Select.Item>
-          <Select.Item value="1280x704">1280x704</Select.Item>
-          <Select.Item value="1664x896">1664x896 (max)</Select.Item>
-          <Select.Item value="544x960">544x960 (portrait)</Select.Item>
-        </Select.Group>
-        <Select.Separator />
+        <!-- terra fork: LTX-2.5 on Radiance with RADIANCE_LTX_MAX_AREA_X=3: sides a multiple of 32 (all but 960x544 and
+             544x960 are multiples of 64, which latent_upscale: 2 in Advanced needs for the two-stage recipe), at most
+             1,566,720 pixels a frame and 3:1; 960x544 is the release's native canvas. -->
         <Select.Group>
           <Select.Label>Landscape</Select.Label>
-          <Select.Item value="1280x720">1280x720 (16:9)</Select.Item>
-          <Select.Item value="1920x1080">1920x1080 (16:9)</Select.Item>
+          <Select.Item value="960x544">960x544 (16:9, native)</Select.Item>
+          <Select.Item value="1280x704">1280x704 (16:9)</Select.Item>
+          <Select.Item value="1664x896">1664x896 (16:9, max)</Select.Item>
+          <Select.Item value="1408x1088">1408x1088 (4:3, max)</Select.Item>
         </Select.Group>
         <Select.Separator />
         <Select.Group>
           <Select.Label>Portrait</Select.Label>
-          <Select.Item value="720x1280">720x1280 (9:16)</Select.Item>
-          <Select.Item value="480x854">480x854 (9:16)</Select.Item>
+          <Select.Item value="544x960">544x960 (9:16)</Select.Item>
+          <Select.Item value="704x1280">704x1280 (9:16)</Select.Item>
+          <Select.Item value="896x1664">896x1664 (9:16, max)</Select.Item>
+          <Select.Item value="1088x1408">1088x1408 (3:4, max)</Select.Item>
         </Select.Group>
         <Select.Separator />
         <Select.Group>
           <Select.Label>Square</Select.Label>
-          <Select.Item value="720x720">720x720</Select.Item>
+          <Select.Item value="768x768">768x768</Select.Item>
+          <Select.Item value="1216x1216">1216x1216 (max)</Select.Item>
         </Select.Group>
       </Select.Content>
     </Select.Root>
 
     <label class="flex items-center gap-1 text-sm">
       <span class="text-xs text-muted-foreground">Seconds</span>
-      <Input type="number" class="h-9 w-16" bind:value={$secondsStore} min="1" max="60" />
+      <Input type="number" class="h-9 w-16" bind:value={$secondsStore} min="1" max="6.7" step="0.1" title="LTX-2.5: 0.7 to 6.7 s, rounded up to 8-frame steps" />
     </label>
 
     <label class="flex items-center gap-1 text-sm">

@@ -6,10 +6,10 @@ export type PlaygroundTab = "chat" | "images" | "speech" | "audio" | "realtime" 
 export const playgroundTabs: { id: PlaygroundTab; label: string }[] = [
   { id: "chat", label: "Chat" },
   { id: "images", label: "Images" },
+  { id: "video", label: "Video" },
   { id: "speech", label: "Speech" },
   { id: "audio", label: "Transcription" },
   { id: "realtime", label: "Realtime" },
-  { id: "video", label: "Video" },
   { id: "rerank", label: "Rerank" },
   { id: "concurrency", label: "Load Test" },
 ];

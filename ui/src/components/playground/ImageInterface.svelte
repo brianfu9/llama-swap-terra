@@ -198,24 +198,33 @@
     >
       <Select.Trigger class="h-9 w-40">{$selectedSizeStore}</Select.Trigger>
       <Select.Content>
+        <!-- terra fork: Qwen-Image 2.1 on Radiance. Sides are rounded down to a multiple of 32; at most 16,800
+             latent tokens (about 4.3 MP) a picture; 2048x2048 is the model's native size. -->
         <Select.Group>
           <Select.Label>Square</Select.Label>
-          <Select.Item value="512x512">512x512</Select.Item>
           <Select.Item value="1024x1024">1024x1024</Select.Item>
+          <Select.Item value="1536x1536">1536x1536</Select.Item>
+          <Select.Item value="2048x2048">2048x2048 (native, max)</Select.Item>
         </Select.Group>
         <Select.Separator />
         <Select.Group>
           <Select.Label>Landscape</Select.Label>
-          <Select.Item value="1024x768">1024x768 (4:3)</Select.Item>
-          <Select.Item value="1280x720">1280x720 (16:9)</Select.Item>
-          <Select.Item value="1792x1024">1792x1024 (SDXL)</Select.Item>
+          <Select.Item value="1664x928">1664x928 (16:9)</Select.Item>
+          <Select.Item value="2720x1536">2720x1536 (16:9, max)</Select.Item>
+          <Select.Item value="1536x1024">1536x1024 (3:2)</Select.Item>
+          <Select.Item value="2528x1696">2528x1696 (3:2, max)</Select.Item>
+          <Select.Item value="1408x1056">1408x1056 (4:3)</Select.Item>
+          <Select.Item value="2400x1792">2400x1792 (4:3, max)</Select.Item>
         </Select.Group>
         <Select.Separator />
         <Select.Group>
           <Select.Label>Portrait</Select.Label>
-          <Select.Item value="768x1024">768x1024 (3:4)</Select.Item>
-          <Select.Item value="720x1280">720x1280 (9:16)</Select.Item>
-          <Select.Item value="1024x1792">1024x1792 (SDXL)</Select.Item>
+          <Select.Item value="928x1664">928x1664 (9:16)</Select.Item>
+          <Select.Item value="1536x2720">1536x2720 (9:16, max)</Select.Item>
+          <Select.Item value="1024x1536">1024x1536 (2:3)</Select.Item>
+          <Select.Item value="1696x2528">1696x2528 (2:3, max)</Select.Item>
+          <Select.Item value="1056x1408">1056x1408 (3:4)</Select.Item>
+          <Select.Item value="1792x2400">1792x2400 (3:4, max)</Select.Item>
         </Select.Group>
       </Select.Content>
     </Select.Root>
