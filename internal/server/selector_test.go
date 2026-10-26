@@ -230,12 +230,12 @@ func TestServer_SelectorMiddleware_RewritesBeforeFiltersAndRecordsActivity(t *te
 func TestServer_SelectorMiddleware_RewriteDeleteQueryModel(t *testing.T) {
 	cfg := selectorTestConfig(t)
 	local := newStubRouter([]string{"a", "b", "c"}, "")
-	var received shared.ReqContextData
+	var received swaputil.ReqContextData
 	var gotQueryModel string
 	var gotContentLength int64
 	var gotBody []byte
 	local.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
-		received, _ = shared.ReadContext(r.Context())
+		received, _ = swaputil.ReadContext(r.Context())
 		gotQueryModel = r.URL.Query().Get("model")
 		gotContentLength = r.ContentLength
 		gotBody, _ = io.ReadAll(r.Body)

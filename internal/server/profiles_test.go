@@ -138,7 +138,7 @@ func TestServer_ProfileMiddleware_RewriteDeleteQueryModel(t *testing.T) {
 		gotQueryModel = r.URL.Query().Get("model")
 		gotContentLength = r.ContentLength
 		gotBody, _ = io.ReadAll(r.Body)
-		data, _ := shared.ReadContext(r.Context())
+		data, _ := swaputil.ReadContext(r.Context())
 		gotModelID = data.ModelID
 		w.WriteHeader(http.StatusOK)
 	}
