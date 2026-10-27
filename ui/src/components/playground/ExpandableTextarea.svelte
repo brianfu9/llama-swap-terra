@@ -31,14 +31,18 @@
 </script>
 
 <div class="group relative flex min-h-0 flex-1 items-stretch">
+  <!-- Capped so a large paste scrolls inside the box instead of pushing the
+       output and the buttons off a phone screen. Read-only rather than
+       disabled while busy: iOS does not touch-scroll a disabled textarea. -->
   <Textarea
-    class="resize-none pr-10"
+    class="max-h-[35dvh] resize-none overflow-y-auto pr-10 {disabled ? 'opacity-50' : ''}"
     bind:ref
     {placeholder}
     {rows}
     bind:value
     {onkeydown}
-    {disabled}
+    readonly={disabled}
+    aria-disabled={disabled}
   />
   <Button
     variant="outline"

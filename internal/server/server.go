@@ -84,6 +84,7 @@ type Server struct {
 
 	shutdownCtx    context.Context
 	shutdownFn     context.CancelFunc
+	jobs           *jobStore
 	shuttingDown   atomic.Bool
 	tailcatAddress atomic.Pointer[string]
 }
@@ -548,6 +549,14 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/hardware", apiChain.ThenFunc(s.handleAPIHardware))
 	mux.Handle("GET /api/tailcat", apiChain.ThenFunc(s.handleAPITailcat))
 	mux.Handle("GET /api/captures/{id}", apiChain.ThenFunc(s.handleAPICapture))
+
+	// terra fork: background jobs for the synchronous image endpoints (jobs.go).
+	if s.jobs == nil {
+		s.jobs = newJobStore()
+	}
+	mux.Handle("POST /api/jobs/{kind}", apiChain.ThenFunc(s.handleAPIJobCreate))
+	mux.Handle("GET /api/jobs/{kind}/{id}", apiChain.ThenFunc(s.handleAPIJobGet))
+	mux.Handle("DELETE /api/jobs/{kind}/{id}", apiChain.ThenFunc(s.handleAPIJobDelete))
 
 	// Stateless MCP server exposing llama-swap's own documentation as tools,
 	// consumed by the Playground's agentic chat and by any external MCP client.

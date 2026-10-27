@@ -179,7 +179,7 @@
   }
 </script>
 
-<div class="flex flex-col h-full">
+<div class="flex flex-col h-full overflow-y-auto">
   <!-- Model, mode, size and duration controls -->
   <div class="shrink-0 flex flex-wrap items-center gap-2 mb-4">
     <ModelSelector
@@ -243,7 +243,7 @@
     <EmptyState message="No models configured. Add models to your configuration to generate video." />
   {:else}
     <!-- Video display area -->
-    <div class="flex-1 overflow-auto mb-4 flex items-center justify-center bg-background border border-border rounded-md">
+    <div class="flex-1 min-h-48 overflow-auto mb-4 flex items-center justify-center bg-background border border-border rounded-md">
       {#if isGenerating}
         <div class="text-center text-muted-foreground">
           <div class="inline-block w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mb-2"></div>

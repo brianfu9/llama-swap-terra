@@ -212,7 +212,7 @@
   }
 </script>
 
-<div class="flex flex-col h-full">
+<div class="flex flex-col h-full overflow-y-auto">
   <!-- Model and voice selectors -->
   <div class="shrink-0 flex gap-2 mb-4">
     <ModelSelector
