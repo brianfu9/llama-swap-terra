@@ -423,6 +423,22 @@ export interface ChatMessage {
   /** UI-only. Stripped before a message is sent upstream. */
   toolOk?: boolean;
   toolDurationMs?: number;
+  /** UI-only, terra fork: a Chat media tool's picture or video (lib/mediaTools.ts). */
+  media?: MediaInfo;
+}
+
+/** terra fork: state of a generate_image / generate_video call. The media bytes are in IndexedDB under `keys`. */
+export interface MediaInfo {
+  kind: "image" | "video";
+  status: "running" | "done" | "error" | "cancelled";
+  prompt: string;
+  model: string;
+  size?: string;
+  seconds?: number;
+  /** The image job id (/api/jobs) or the video id (/v1/videos), once the job exists. */
+  jobId?: string;
+  keys?: string[];
+  error?: string;
 }
 
 export function getTextContent(content: string | ContentPart[]): string {
