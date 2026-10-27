@@ -2,13 +2,12 @@ import type { ImageGenerationOptions, ImageGenerationRequest, ImageGenerationRes
 import { playgroundSessionHeaders } from "./playgroundSession";
 import { apiUrl } from "./apiPath";
 
-export async function generateImage(
+export function buildImageRequest(
   model: string,
   prompt: string,
   size: string,
-  signal?: AbortSignal,
   options: ImageGenerationOptions = {}
-): Promise<ImageGenerationResponse> {
+): ImageGenerationRequest {
   const request: ImageGenerationRequest = {
     model,
     prompt,
@@ -20,6 +19,17 @@ export async function generateImage(
   if (options.steps && options.steps > 0) request.num_inference_steps = Math.floor(options.steps);
   if (options.negativePrompt && options.negativePrompt.trim()) request.negative_prompt = options.negativePrompt.trim();
   if (options.trueCfgScale && options.trueCfgScale > 1 && request.negative_prompt) request.true_cfg_scale = options.trueCfgScale;
+  return request;
+}
+
+export async function generateImage(
+  model: string,
+  prompt: string,
+  size: string,
+  signal?: AbortSignal,
+  options: ImageGenerationOptions = {}
+): Promise<ImageGenerationResponse> {
+  const request = buildImageRequest(model, prompt, size, options);
 
   const response = await fetch(apiUrl("/v1/images/generations"), {
     method: "POST",

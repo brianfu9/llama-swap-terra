@@ -2,13 +2,27 @@
   import { hasListedModels } from "../../stores/api";
   import { persistentStore } from "../../stores/persistent";
   import { createPlaygroundInterface } from "../../lib/playgroundInterface";
-  import { generateImage } from "../../lib/imageApi";
-  import { generateSdImage, fetchSdLoras } from "../../lib/sdApi";
+  import { get } from "svelte/store";
+  import { buildImageRequest } from "../../lib/imageApi";
+  import { fetchSdLoras } from "../../lib/sdApi";
+  import {
+    createImageJob,
+    deleteImageJob,
+    waitForImageJob,
+    ImageJobGoneError,
+    type ImageJobKind,
+  } from "../../lib/imageJobs";
   import { playgroundStores } from "../../stores/playgroundActivity";
   import ModelSelector from "./ModelSelector.svelte";
   import ExpandableTextarea from "./ExpandableTextarea.svelte";
   import EmptyState from "../EmptyState.svelte";
-  import type { ImageApiMode, SdApiLora, SdApiLoraRef } from "../../lib/types";
+  import type {
+    ImageApiMode,
+    ImageGenerationResponse,
+    SdApiLora,
+    SdApiLoraRef,
+    SdApiResponse,
+  } from "../../lib/types";
   import { isSubmitEnter } from "../../lib/ime";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
@@ -39,7 +53,17 @@
   const sdSchedulerStore = persistentStore<string>("playground-sdapi-scheduler", "");
   const sdBatchSizeStore = persistentStore<number>("playground-sdapi-batch-size", 1);
 
-  let prompt = $state("");
+  // terra fork: generation runs as a llama-swap job (lib/imageJobs.ts). The job is remembered here so a
+  // reloaded or restored page picks the result up again; `finished` marks one whose result was shown.
+  interface SavedJob {
+    kind: ImageJobKind;
+    id: string;
+    prompt: string;
+    finished: boolean;
+  }
+  const jobStore = persistentStore<SavedJob | null>("playground-image-job", null);
+
+  let prompt = $state(get(jobStore)?.prompt ?? "");
   let isGenerating = $derived($busyStore);
   let generatedImages = $state<string[]>([]);
   let showFullscreen = $state(false);
@@ -86,11 +110,55 @@
     return availableLoras.find((l) => l.path === path)?.name ?? path;
   }
 
+  function imagesFrom(kind: ImageJobKind, result: unknown): string[] {
+    if (kind === "sdapi-txt2img") {
+      return ((result as SdApiResponse).images ?? []).map((img) => `data:image/png;base64,${img}`);
+    }
+    return ((result as ImageGenerationResponse).data ?? [])
+      .map((d) => (d.b64_json ? `data:image/png;base64,${d.b64_json}` : d.url ?? ""))
+      .filter((u) => u !== "");
+  }
+
+  // Waits for a job and shows its pictures. Cancel stops the job on the server too.
+  async function awaitJob(saved: SavedJob, signal: AbortSignal, quietIfGone = false) {
+    const onAbort = () => {
+      jobStore.set(null);
+      deleteImageJob(saved.kind, saved.id);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const result = await waitForImageJob<unknown>(saved.kind, saved.id, signal);
+      generatedImages = imagesFrom(saved.kind, result);
+      jobStore.set({ ...saved, finished: true });
+    } catch (err) {
+      if (!signal.aborted) jobStore.set(null);
+      if (quietIfGone && err instanceof ImageJobGoneError) return;
+      throw err;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  // Pick up the job a previous page load left behind.
+  const pendingJob = get(jobStore);
+  if (pendingJob) {
+    iface.run((signal) => awaitJob(pendingJob, signal, pendingJob.finished));
+  }
+
   async function generate() {
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt || !$selectedModelStore || isGenerating) return;
 
     await iface.run(async (signal) => {
+      const previous = get(jobStore);
+      if (previous) {
+        jobStore.set(null);
+        deleteImageJob(previous.kind, previous.id);
+      }
+      generatedImages = [];
+
+      let kind: ImageJobKind;
+      let body: object;
       if (isSdapi) {
         const [w, h] = $selectedSizeStore.split("x").map(Number);
         const request = {
@@ -107,19 +175,14 @@
           scheduler: $sdSchedulerStore || undefined,
           lora: selectedLoras.length > 0 ? selectedLoras : undefined,
         };
-
-        const response = await generateSdImage(request, signal);
-        if (response.images && response.images.length > 0) {
-          generatedImages = response.images.map(
-            (img) => `data:image/png;base64,${img}`
-          );
-        }
+        kind = "sdapi-txt2img";
+        body = request;
       } else {
-        const response = await generateImage(
+        kind = "images";
+        body = buildImageRequest(
           $selectedModelStore,
           trimmedPrompt,
           $selectedSizeStore,
-          signal,
           {
             n: $oaNStore,
             seed: $oaSeedStore,
@@ -128,13 +191,12 @@
             trueCfgScale: $oaCfgStore,
           }
         );
-
-        if (response.data && response.data.length > 0) {
-          generatedImages = response.data
-            .map((d) => (d.b64_json ? `data:image/png;base64,${d.b64_json}` : d.url ?? ""))
-            .filter((u) => u !== "");
-        }
       }
+
+      const job = await createImageJob(kind, body, signal);
+      const saved: SavedJob = { kind, id: job.id, prompt: trimmedPrompt, finished: false };
+      jobStore.set(saved);
+      await awaitJob(saved, signal);
     });
   }
 
@@ -143,6 +205,11 @@
   }
 
   function clearImage() {
+    const saved = get(jobStore);
+    if (saved) {
+      jobStore.set(null);
+      deleteImageJob(saved.kind, saved.id);
+    }
     generatedImages = [];
     $error = null;
     prompt = "";
@@ -180,7 +247,7 @@
   }
 </script>
 
-<div class="flex flex-col h-full">
+<div class="flex flex-col h-full overflow-y-auto">
   <!-- Model selector and mode toggle -->
   <div class="shrink-0 flex flex-wrap gap-2 mb-4">
     <ModelSelector
@@ -448,11 +515,12 @@
     <EmptyState message="No models configured. Add models to your configuration to generate images." />
   {:else}
     <!-- Image display area -->
-    <div class="flex-1 overflow-auto mb-4 flex items-center justify-center bg-background border border-border rounded-md">
+    <div class="flex-1 min-h-48 overflow-auto mb-4 flex items-center justify-center bg-background border border-border rounded-md">
       {#if isGenerating}
         <div class="text-center text-muted-foreground">
           <div class="inline-block w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mb-2"></div>
           <p>Generating image...</p>
+          <p class="text-xs mt-1 px-4">This runs on the server. You can lock the phone or leave the page; the result is kept for an hour.</p>
         </div>
       {:else if $error}
         <div class="text-center text-red-500 p-4">
