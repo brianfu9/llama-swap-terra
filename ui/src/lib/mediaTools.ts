@@ -91,6 +91,12 @@ export interface MediaToolContext {
   videoModel: string;
   videoSize: string;
   videoSeconds: number;
+  /**
+   * A model to load again once a picture is done (the chat model). llama-swap
+   * does it at the end of the image job, so it happens while a locked phone is
+   * not polling. Video jobs run in the backend, so the caller reloads after them.
+   */
+  reloadModel?: string;
 }
 
 export interface ParsedImageArgs {
@@ -299,7 +305,11 @@ export async function runMediaTool(
         n: parsed.n,
         negativePrompt: parsed.negativePrompt,
       });
-      const job = await createImageJob("images", body, signal);
+      const job = await createImageJob(
+        "images",
+        ctx.reloadModel ? { ...body, reload_model: ctx.reloadModel } : body,
+        signal
+      );
       media = { ...media, jobId: job.id };
     } else {
       const job = await createVideoJob(ctx.videoModel, parsed.prompt, { size: parsed.size, seconds: parsed.seconds }, null, signal);

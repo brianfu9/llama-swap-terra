@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/mostlygeek/llama-swap/internal/config"
 )
 
 func createJob(t *testing.T, s *Server, ctx context.Context, kind, body string) jobView {
@@ -221,5 +225,109 @@ func TestJobStore_PruneKeepsRunningAndDropsOldOrExcessFinished(t *testing.T) {
 	}
 	if len(st.jobs) != jobMaxFinished+1 {
 		t.Errorf("kept %d jobs, want %d", len(st.jobs), jobMaxFinished+1)
+	}
+}
+
+// reloadRecorder is a stub upstream that records each request it sees.
+type reloadRecorder struct {
+	mu       sync.Mutex
+	requests []string
+	bodies   []string
+}
+
+func (rr *reloadRecorder) seen() []string {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	return append([]string(nil), rr.requests...)
+}
+
+func newReloadServer(t *testing.T, imageStatus int, block <-chan struct{}) (*Server, *reloadRecorder) {
+	t.Helper()
+	rr := &reloadRecorder{}
+	local := newStubRouter([]string{"img", "chat"}, "")
+	local.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		rr.mu.Lock()
+		rr.requests = append(rr.requests, r.Method+" "+r.URL.Path)
+		rr.bodies = append(rr.bodies, string(body))
+		rr.mu.Unlock()
+		if r.URL.Path == "/v1/images/generations" {
+			if block != nil && strings.Contains(string(body), "slow") {
+				<-block
+			}
+			w.WriteHeader(imageStatus)
+			w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		w.Write([]byte("ok"))
+	}
+	s := newTestServer(local, newStubRouter(nil, ""))
+	s.cfg = config.Config{Models: map[string]config.ModelConfig{"img": {}, "chat": {}}}
+	return s, rr
+}
+
+func waitForRequests(t *testing.T, rr *reloadRecorder, n int) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := rr.seen(); len(got) >= n {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("saw %v, want %d requests", rr.seen(), n)
+	return nil
+}
+
+func TestServer_Job_ReloadsTheChatModelAfterSuccess(t *testing.T) {
+	s, rr := newReloadServer(t, http.StatusOK, nil)
+	v := createJob(t, s, context.Background(), "images", `{"model":"img","prompt":"x","reload_model":"chat"}`)
+	if done := waitJobDone(t, s, "images", v.ID); done.Status != jobStatusSucceeded {
+		t.Fatalf("status %q", done.Status)
+	}
+	got := waitForRequests(t, rr, 2)
+	if got[0] != "POST /v1/images/generations" || got[1] != "GET /" {
+		t.Fatalf("requests %v", got)
+	}
+	rr.mu.Lock()
+	forwarded := rr.bodies[0]
+	rr.mu.Unlock()
+	if strings.Contains(forwarded, "reload_model") || !strings.Contains(forwarded, `"prompt":"x"`) {
+		t.Fatalf("forwarded body %s", forwarded)
+	}
+}
+
+func TestServer_Job_NoReloadAfterAFailure(t *testing.T) {
+	s, rr := newReloadServer(t, http.StatusBadRequest, nil)
+	v := createJob(t, s, context.Background(), "images", `{"model":"img","prompt":"x","reload_model":"chat"}`)
+	if done := waitJobDone(t, s, "images", v.ID); done.Status != jobStatusFailed {
+		t.Fatalf("status %q", done.Status)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := rr.seen(); len(got) != 1 {
+		t.Fatalf("requests %v, want only the image", got)
+	}
+}
+
+func TestServer_Job_LastJobToFinishReloads(t *testing.T) {
+	release := make(chan struct{})
+	s, rr := newReloadServer(t, http.StatusOK, release)
+	slow := createJob(t, s, context.Background(), "images", `{"model":"img","prompt":"slow","reload_model":"chat"}`)
+	fast := createJob(t, s, context.Background(), "images", `{"model":"img","prompt":"fast","reload_model":"chat"}`)
+
+	// The fast job ends while the slow one runs, so it must not reload.
+	waitJobDone(t, s, "images", fast.ID)
+	time.Sleep(50 * time.Millisecond)
+	for _, req := range rr.seen() {
+		if req == "GET /" {
+			t.Fatalf("reloaded while another job ran: %v", rr.seen())
+		}
+	}
+
+	close(release)
+	waitJobDone(t, s, "images", slow.ID)
+	got := waitForRequests(t, rr, 3)
+	if got[2] != "GET /" {
+		t.Fatalf("requests %v, want the reload last", got)
 	}
 }
