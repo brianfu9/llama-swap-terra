@@ -556,6 +556,7 @@ func (s *Server) routes() {
 	}
 	mux.Handle("POST /api/jobs/{kind}", apiChain.ThenFunc(s.handleAPIJobCreate))
 	mux.Handle("GET /api/jobs/{kind}/{id}", apiChain.ThenFunc(s.handleAPIJobGet))
+	mux.Handle("GET /api/jobs/{kind}/{id}/content", apiChain.ThenFunc(s.handleAPIJobContent))
 	mux.Handle("DELETE /api/jobs/{kind}/{id}", apiChain.ThenFunc(s.handleAPIJobDelete))
 
 	// Stateless MCP server exposing llama-swap's own documentation as tools,

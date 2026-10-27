@@ -35,10 +35,23 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/swaputil"
 )
 
-// jobKinds maps the {kind} path value to the synchronous endpoint a job runs.
-var jobKinds = map[string]string{
-	"images":        "/v1/images/generations",
-	"sdapi-txt2img": "/sdapi/v1/txt2img",
+// jobKind is what a {kind} path value runs.
+type jobKind struct {
+	// path is the endpoint the job posts its body to.
+	path string
+	// video marks the multipart /v1/videos job, which the backend runs
+	// asynchronously; see jobs_video.go.
+	video bool
+	// maxBody caps the job's request body.
+	maxBody int64
+}
+
+// jobKinds maps the {kind} path value to what the job runs.
+var jobKinds = map[string]jobKind{
+	"images":        {path: "/v1/images/generations", maxBody: jobMaxBody},
+	"sdapi-txt2img": {path: "/sdapi/v1/txt2img", maxBody: jobMaxBody},
+	// A video job may carry a reference picture or clip.
+	"videos": {path: "/v1/videos", video: true, maxBody: 64 << 20},
 }
 
 const (
@@ -52,7 +65,7 @@ const (
 	// jobMaxFinished caps how many finished jobs are kept. A result holds
 	// base64 pictures (several MB each at 2048x2048), so the oldest go first.
 	jobMaxFinished = 8
-	// jobMaxBody caps a job's request body.
+	// jobMaxBody caps a JSON job's request body.
 	jobMaxBody = 1 << 20
 )
 
@@ -65,7 +78,9 @@ type job struct {
 	FinishedAt time.Time
 	StatusCode int
 	Body       []byte
-	Error      string
+	// ContentType is the result's type: JSON for pictures, the video's own for a video.
+	ContentType string
+	Error       string
 	// ReloadModel is loaded again after the job succeeds (see above).
 	ReloadModel string
 	cancel      context.CancelFunc
@@ -78,15 +93,18 @@ type job struct {
 // jobView is the JSON shape of a job. Result carries the upstream response
 // body unchanged when it is JSON.
 type jobView struct {
-	ID         string          `json:"id"`
-	Kind       string          `json:"kind"`
-	Model      string          `json:"model"`
-	Status     string          `json:"status"`
-	CreatedAt  time.Time       `json:"created_at"`
-	FinishedAt *time.Time      `json:"finished_at,omitempty"`
-	StatusCode int             `json:"status_code,omitempty"`
-	Error      string          `json:"error,omitempty"`
-	Result     json.RawMessage `json:"result,omitempty"`
+	ID         string     `json:"id"`
+	Kind       string     `json:"kind"`
+	Model      string     `json:"model"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	StatusCode int        `json:"status_code,omitempty"`
+	// ContentType is set once the job has succeeded; the bytes are at
+	// /api/jobs/{kind}/{id}/content (inline as Result when they are JSON).
+	ContentType string          `json:"content_type,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	Result      json.RawMessage `json:"result,omitempty"`
 }
 
 type jobStore struct {
@@ -108,6 +126,9 @@ func (st *jobStore) view(j *job, withResult bool) jobView {
 		CreatedAt:  j.CreatedAt,
 		StatusCode: j.StatusCode,
 		Error:      j.Error,
+	}
+	if j.Status == jobStatusSucceeded {
+		v.ContentType = j.ContentType
 	}
 	if !j.FinishedAt.IsZero() {
 		t := j.FinishedAt
@@ -173,17 +194,17 @@ func (r *jobRecorder) Flush() {}
 // handleAPIJobCreate starts a job and answers 202 with its id at once.
 func (s *Server) handleAPIJobCreate(w http.ResponseWriter, r *http.Request) {
 	kind := r.PathValue("kind")
-	path, ok := jobKinds[kind]
+	jk, ok := jobKinds[kind]
 	if !ok {
 		swaputil.SendResponse(w, r, http.StatusNotFound, "unknown job kind")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, jobMaxBody+1))
+	body, err := io.ReadAll(io.LimitReader(r.Body, jk.maxBody+1))
 	if err != nil {
 		swaputil.SendResponse(w, r, http.StatusBadRequest, "reading the request body failed")
 		return
 	}
-	if len(body) > jobMaxBody {
+	if int64(len(body)) > jk.maxBody {
 		swaputil.SendResponse(w, r, http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}
@@ -191,11 +212,25 @@ func (s *Server) handleAPIJobCreate(w http.ResponseWriter, r *http.Request) {
 		Model       string `json:"model"`
 		ReloadModel string `json:"reload_model"`
 	}
-	if err := json.Unmarshal(body, &probe); err != nil || probe.Model == "" {
+	contentType := "application/json"
+	if jk.video {
+		// A video job forwards its multipart form unchanged, so the reload
+		// model comes in the query instead.
+		contentType = r.Header.Get("Content-Type")
+		model, err := multipartModel(contentType, body)
+		if err != nil {
+			swaputil.SendResponse(w, r, http.StatusBadRequest, err.Error())
+			return
+		}
+		probe.Model = model
+	} else if err := json.Unmarshal(body, &probe); err != nil || probe.Model == "" {
 		swaputil.SendResponse(w, r, http.StatusBadRequest, "the body must be JSON with a model")
 		return
 	}
-	if probe.ReloadModel != "" {
+	if q := r.URL.Query().Get("reload_model"); q != "" {
+		probe.ReloadModel = q
+	}
+	if !jk.video && bytes.Contains(body, []byte(`"reload_model"`)) {
 		// Backends refuse fields they do not know, so reload_model stops here.
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(body, &fields); err != nil {
@@ -210,7 +245,7 @@ func (s *Server) handleAPIJobCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(s.shutdownCtx)
-	inner, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
+	inner, err := http.NewRequestWithContext(ctx, http.MethodPost, jk.path, bytes.NewReader(body))
 	if err != nil {
 		cancel()
 		swaputil.SendResponse(w, r, http.StatusInternalServerError, "building the job request failed")
@@ -218,7 +253,7 @@ func (s *Server) handleAPIJobCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	// Auth and the playground session id travel in the headers.
 	inner.Header = r.Header.Clone()
-	inner.Header.Set("Content-Type", "application/json")
+	inner.Header.Set("Content-Type", contentType)
 	inner.Header.Del("Content-Length")
 	inner.Header.Del("Accept-Encoding")
 	inner.RemoteAddr = r.RemoteAddr
@@ -259,7 +294,11 @@ func (s *Server) runJob(j *job, inner *http.Request) {
 				rec.body.WriteString("internal error")
 			}
 		}()
-		s.handler.ServeHTTP(rec, inner)
+		if jobKinds[j.Kind].video {
+			s.runVideoJob(j, inner, rec)
+		} else {
+			s.handler.ServeHTTP(rec, inner)
+		}
 	}()
 
 	st := s.jobs
@@ -272,6 +311,7 @@ func (s *Server) runJob(j *job, inner *http.Request) {
 	case rec.status >= 200 && rec.status < 300:
 		j.Status = jobStatusSucceeded
 		j.Body = rec.body.Bytes()
+		j.ContentType = rec.header.Get("Content-Type")
 	default:
 		j.Status = jobStatusFailed
 		j.Error = rec.body.String()
@@ -331,6 +371,30 @@ func (s *Server) handleAPIJobGet(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(view)
+}
+
+// handleAPIJobContent returns a succeeded job's result bytes with their own
+// content type: how a video job's clip is fetched.
+func (s *Server) handleAPIJobContent(w http.ResponseWriter, r *http.Request) {
+	st := s.jobs
+	st.mu.Lock()
+	j, ok := st.jobs[r.PathValue("id")]
+	var body []byte
+	var ctype string
+	if ok && j.Status == jobStatusSucceeded {
+		body, ctype = j.Body, j.ContentType
+	}
+	st.mu.Unlock()
+	if body == nil {
+		swaputil.SendResponse(w, r, http.StatusNotFound, "no finished result for this job")
+		return
+	}
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(body))
 }
 
 // handleAPIJobDelete cancels a running job, or forgets a finished one.

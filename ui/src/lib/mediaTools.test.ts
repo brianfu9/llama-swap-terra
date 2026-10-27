@@ -113,18 +113,22 @@ describe("runMediaTool", () => {
     expect(JSON.parse(f.mock.calls[0][1].body)).toMatchObject({ model: "qwen-image", reload_model: "rad" });
   });
 
-  it("runs a video through /v1/videos and stores the clip", async () => {
+  it("runs a video as a llama-swap job and stores the clip", async () => {
     const f = vi
       .fn()
-      .mockResolvedValueOnce(reply(200, { id: "vid_1", status: "queued" }))
-      .mockResolvedValueOnce(reply(200, { id: "vid_1", status: "completed" }))
+      .mockResolvedValueOnce(reply(202, { id: "job_v", status: "running" }))
+      .mockResolvedValueOnce(reply(200, { id: "job_v", status: "succeeded", content_type: "video/mp4" }))
       .mockResolvedValueOnce(reply(200, {}));
     vi.stubGlobal("fetch", f);
-    const out = await runMediaTool("call_2", VIDEO_TOOL, '{"prompt":"waves"}', ctx, new AbortController().signal, () => {});
-    expect(out).toMatchObject({ status: "done", keys: ["call_2/0"], jobId: "vid_1", model: "ltx", size: "960x544", seconds: 5 });
-    expect(f.mock.calls[0][0]).toBe("/v1/videos");
-    expect(f.mock.calls[1][0]).toBe("/v1/videos/vid_1?model=ltx");
-    expect(f.mock.calls[2][0]).toBe("/v1/videos/vid_1/content?model=ltx");
+    const out = await runMediaTool("call_2", VIDEO_TOOL, '{"prompt":"waves"}', { ...ctx, reloadModel: "rad" }, new AbortController().signal, () => {});
+    expect(out).toMatchObject({ status: "done", keys: ["call_2/0"], jobId: "job_v", model: "ltx", size: "960x544", seconds: 5 });
+    expect(f.mock.calls[0][0]).toBe("/api/jobs/videos?reload_model=rad");
+    const form = f.mock.calls[0][1].body as FormData;
+    expect(form.get("model")).toBe("ltx");
+    expect(form.get("size")).toBe("960x544");
+    expect(f.mock.calls[1][0]).toBe("/api/jobs/videos/job_v");
+    expect(f.mock.calls[2][0]).toBe("/api/jobs/videos/job_v/content");
+    expect(putMedia).toHaveBeenCalledTimes(1);
   });
 
   it("reports bad arguments without calling the server", async () => {

@@ -183,7 +183,7 @@ func TestServer_Job_RejectsBadRequests(t *testing.T) {
 		kind, body string
 		want       int
 	}{
-		{"videos", `{"model":"img"}`, http.StatusNotFound},
+		{"music", `{"model":"img"}`, http.StatusNotFound},
 		{"images", `not json`, http.StatusBadRequest},
 		{"images", `{"prompt":"no model"}`, http.StatusBadRequest},
 		{"images", `{"model":"img","prompt":"` + strings.Repeat("x", jobMaxBody) + `"}`, http.StatusRequestEntityTooLarge},
