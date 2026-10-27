@@ -331,3 +331,29 @@ func TestServer_Job_LastJobToFinishReloads(t *testing.T) {
 		t.Fatalf("requests %v, want the reload last", got)
 	}
 }
+
+func TestServer_Job_IgnoresInformationalResponses(t *testing.T) {
+	var gotExpect string
+	local := newStubRouter([]string{"img"}, "")
+	local.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		gotExpect = r.Header.Get("Expect")
+		w.WriteHeader(http.StatusContinue)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"data":[]}`))
+	}
+	s := newTestServer(local, newStubRouter(nil, ""))
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/images", strings.NewReader(`{"model":"img","prompt":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Expect", "100-continue")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	var v jobView
+	json.Unmarshal(w.Body.Bytes(), &v)
+	done := waitJobDone(t, s, "images", v.ID)
+	if done.Status != jobStatusSucceeded || done.StatusCode != http.StatusOK {
+		t.Fatalf("status %q code %d", done.Status, done.StatusCode)
+	}
+	if gotExpect != "" {
+		t.Fatalf("Expect forwarded: %q", gotExpect)
+	}
+}

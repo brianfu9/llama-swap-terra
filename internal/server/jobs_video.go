@@ -98,7 +98,10 @@ type holdWriter struct {
 
 func (w *holdWriter) Header() http.Header { return w.header }
 func (w *holdWriter) markHeld()           { w.once.Do(func() { close(w.held) }) }
-func (w *holdWriter) WriteHeader(int) {
+func (w *holdWriter) WriteHeader(code int) {
+	if code < 200 {
+		return // informational, not the answer
+	}
 	w.markHeld()
 	<-w.release
 }
