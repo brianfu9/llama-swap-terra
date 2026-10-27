@@ -207,7 +207,10 @@
     onWidthChange={(w) => sidebarWidth.set(w)}
   >
     <AppSidebar />
-    <Sidebar.Inset class="h-[calc(100vh-var(--banner-h))] min-w-0 overflow-hidden">
+    <!-- h-[calc(100dvh-var(--banner-h))], not h-screen: on a phone 100vh is the height with the browser's
+         bars hidden, so the bottom of the page (a tab's prompt box) sat under
+         the toolbar and the page had to scroll to reach it. -->
+    <Sidebar.Inset class="h-[calc(100dvh-var(--banner-h))] min-w-0 overflow-hidden">
       <header
         class="bg-background sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b px-4"
       >
