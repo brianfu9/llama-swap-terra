@@ -7,13 +7,25 @@
   import { currentStats, markCancelled, startTracking, trackChunk } from "../../lib/generationStats";
   import { DOCS_AGENT_SYSTEM_PROMPT } from "../../lib/prompts/docsAgent";
   import { playgroundStores } from "../../stores/playgroundActivity";
-  import type { ChatMessage, ContentPart } from "../../lib/types";
+  import { isToolCallOnlyTurn, type ChatMessage, type ContentPart, type MediaInfo, type ToolCall } from "../../lib/types";
+  import { accumulateToolCalls, finalizeToolCalls, sanitizeMessages } from "../../lib/agentLoop";
+  import type { ToolCallDelta } from "../../lib/chatApi";
+  import {
+    MEDIA_TOOLS,
+    finishMediaTool,
+    isMediaTool,
+    mediaResultText,
+    runMediaTool,
+    type MediaToolContext,
+  } from "../../lib/mediaTools";
+  import { pruneMedia } from "../../lib/mediaStore";
+  import MediaToolCard from "./MediaToolCard.svelte";
   import { isSubmitEnter } from "../../lib/ime";
   import ChatMessageComponent from "./ChatMessage.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import ChatComposer from "./ChatComposer.svelte";
   import EmptyState from "../EmptyState.svelte";
-  import { Settings, Paperclip, SquarePen } from "@lucide/svelte";
+  import { Settings, Paperclip, SquarePen, ImageIcon } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
@@ -31,6 +43,8 @@
   const topPStore = persistentStore<number>("playground-top-p", 1);
   const topKStore = persistentStore<number>("playground-top-k", 40);
   const minPStore = persistentStore<number>("playground-min-p", 0);
+  // terra fork: generate_image / generate_video tools (lib/mediaTools.ts), off unless switched on.
+  const mediaToolsStore = persistentStore<boolean>("playground-chat-media-tools", false);
 
   // This tab was briefly the docs agent; that is the Docs tab now. Anyone who
   // used it in between has the agent's prompt persisted here, which is not a
@@ -39,26 +53,34 @@
     systemPromptStore.set("");
   }
 
-  /** Chat holds no tool turns; the Docs tab is where tool calling lives. */
-  type PlainMessage = ChatMessage & { role: "user" | "assistant" | "system" };
+  // terra fork: the only tool turns this tab holds are media tool calls. Any
+  // other tool turn (from when this tab was agentic) is dropped on load, and
+  // sanitizeMessages removes calls left without a result.
+  type PlainMessage = ChatMessage;
 
   function loadMessages(): PlainMessage[] {
     try {
       const saved = localStorage.getItem("playground-messages");
       const parsed = saved ? JSON.parse(saved) : [];
       if (!Array.isArray(parsed)) return [];
-      // A history left over from when this tab was agentic still holds tool
-      // turns this tab cannot render or replay. Sending one upstream is a hard
-      // 400, so they are dropped on load.
-      return parsed.filter(
-        (msg: ChatMessage): msg is PlainMessage => msg?.role !== "tool" && !msg?.tool_calls?.length
+      const kept = parsed.filter(
+        (msg: ChatMessage) =>
+          (msg?.role !== "tool" || Boolean(msg.media)) &&
+          (!msg?.tool_calls?.length || msg.tool_calls.every((c) => isMediaTool(c.function?.name ?? "")))
+      );
+      // A media call that never got a job id cannot be picked up again.
+      return sanitizeMessages(kept).map((msg) =>
+        msg.media?.status === "running" && !msg.media.jobId
+          ? { ...msg, media: { ...msg.media, status: "error" as const, error: "Interrupted by a page reload." } }
+          : msg
       );
     } catch {
       return [];
     }
   }
 
-  let messages = $state<PlainMessage[]>(loadMessages());
+  const initialMessages = loadMessages();
+  let messages = $state<PlainMessage[]>(initialMessages);
   let userInput = $state("");
   let isStreaming = $state(false);
   let isReasoning = $state(false);
@@ -206,6 +228,7 @@
       cancelStreaming();
     }
     messages = [];
+    pruneMedia(new Set()).catch(() => {});
     isReasoning = false;
     reasoningStartTime = 0;
   }
@@ -213,6 +236,97 @@
   /** Merges a patch into the last message. */
   function patchLast(patch: Partial<PlainMessage>) {
     messages = messages.map((msg, i) => (i === messages.length - 1 ? { ...msg, ...patch } : msg));
+  }
+
+  function patchAt(idx: number, patch: Partial<PlainMessage>) {
+    messages = messages.map((msg, i) => (i === idx ? { ...msg, ...patch } : msg));
+  }
+
+  /** Applies a media tool's progress to its tool message. */
+  function patchToolMessage(callId: string, media: MediaInfo) {
+    messages = messages.map((msg) =>
+      msg.role === "tool" && msg.tool_call_id === callId
+        ? { ...msg, media, content: mediaResultText(media), toolOk: media.status === "done" }
+        : msg
+    );
+  }
+
+  /** The Images and Video tabs' persisted model and size choices. */
+  function mediaContext(): MediaToolContext {
+    const read = <T,>(key: string, fallback: T): T => {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw === null ? fallback : (JSON.parse(raw) as T);
+      } catch {
+        return fallback;
+      }
+    };
+    return {
+      imageModel: read("playground-image-model", ""),
+      imageSize: read("playground-image-size", "1024x1024"),
+      videoModel: read("playground-video-model", ""),
+      videoSize: read("playground-video-size", "960x544"),
+      videoSeconds: read("playground-video-seconds", 5),
+    };
+  }
+
+  const toolsActive = $derived($mediaToolsStore && $endpointStore === "v1/chat/completions");
+
+  /**
+   * Runs the media tool calls of the assistant turn at aIdx. The turn ends
+   * after them: the media model has unloaded the chat model, and swapping it
+   * back just to comment is not worth the reload.
+   */
+  async function runToolCalls(calls: ReturnType<typeof finalizeToolCalls>, signal: AbortSignal) {
+    const ctx = mediaContext();
+    for (const call of calls) {
+      const placeholder: MediaInfo = {
+        kind: call.function.name === "generate_video" ? "video" : "image",
+        status: "running",
+        prompt: "",
+        model: "",
+      };
+      messages = [
+        ...messages,
+        { role: "tool", tool_call_id: call.id, name: call.function.name, content: mediaResultText(placeholder), media: placeholder },
+      ];
+      if (!isMediaTool(call.function.name)) {
+        patchToolMessage(call.id, { ...placeholder, status: "error", error: `Unknown tool ${call.function.name}.` });
+        continue;
+      }
+      if (signal.aborted) {
+        patchToolMessage(call.id, { ...placeholder, status: "cancelled" });
+        continue;
+      }
+      await runMediaTool(call.id, call.function.name, call.function.arguments, ctx, signal, (m) =>
+        patchToolMessage(call.id, m)
+      );
+    }
+  }
+
+  /** Picks up media jobs that were still running when the page was reloaded. */
+  async function resumeMediaJobs() {
+    const running = messages.filter((m) => m.role === "tool" && m.media?.status === "running" && m.media.jobId);
+    if (running.length === 0 || isStreaming) return;
+    isStreaming = true;
+    abortController = new AbortController();
+    const signal = abortController.signal;
+    try {
+      await Promise.all(
+        running.map((m) => finishMediaTool(m.tool_call_id!, m.media!, signal, (media) => patchToolMessage(m.tool_call_id!, media)))
+      );
+    } finally {
+      isStreaming = false;
+      abortController = null;
+    }
+  }
+
+  resumeMediaJobs();
+
+  // Drop stored media that no message shows any more.
+  {
+    const keep = new Set(initialMessages.flatMap((m) => m.media?.keys ?? []));
+    pruneMedia(keep).catch(() => {});
   }
 
   function lastText(): string {
@@ -288,6 +402,8 @@
 
     // Add empty assistant message for the new response
     messages = [...messages, { role: "assistant", content: "" }];
+    const aIdx = messages.length - 1;
+    const toolAcc = new Map<number, Partial<ToolCall>>();
 
     isStreaming = true;
     isReasoning = false;
@@ -313,6 +429,7 @@
           top_p: $topPStore,
           top_k: $topKStore,
           min_p: $minPStore,
+          ...(toolsActive ? { tools: MEDIA_TOOLS } : {}),
         }
       );
 
@@ -322,14 +439,26 @@
         if (chunk.done) break;
         if (chunk.reasoning_content) appendDelta("reasoning", chunk.reasoning_content);
         if (chunk.content) appendDelta("content", chunk.content);
-        patchLast({ stats: currentStats(tracker, now, true) });
+        if (chunk.tool_calls) accumulateToolCalls(toolAcc, chunk.tool_calls as ToolCallDelta[]);
+        patchAt(aIdx, { stats: currentStats(tracker, now, true) });
+      }
+
+      const calls = finalizeToolCalls(toolAcc);
+      if (calls.length > 0) {
+        window.clearInterval(ticker);
+        if (isReasoning) {
+          patchAt(aIdx, { reasoningTimeMs: Date.now() - reasoningStartTime });
+          isReasoning = false;
+        }
+        patchAt(aIdx, { tool_calls: calls, stats: currentStats(tracker, performance.now(), false) });
+        await runToolCalls(calls, abortController.signal);
       }
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") markCancelled(tracker);
       handleTurnError(error);
     } finally {
       window.clearInterval(ticker);
-      patchLast({ stats: currentStats(tracker, performance.now(), false) });
+      patchAt(aIdx, { stats: currentStats(tracker, performance.now(), false) });
       isStreaming = false;
       isReasoning = false;
       abortController = null;
@@ -427,6 +556,21 @@
       match={{ inputModalities: ["text", "image"], outputModalities: ["text"] }}
     />
     <div class="flex shrink-0 gap-2">
+      <Button
+        variant={$mediaToolsStore ? "default" : "outline"}
+        size="icon"
+        onclick={() => mediaToolsStore.set(!$mediaToolsStore)}
+        disabled={isStreaming}
+        title={$endpointStore !== "v1/chat/completions"
+          ? "Image and video tools need /v1/chat/completions"
+          : $mediaToolsStore
+            ? "Image and video tools: on"
+            : "Image and video tools: off"}
+        aria-pressed={$mediaToolsStore}
+        aria-label="Image and video tools"
+      >
+        <ImageIcon />
+      </Button>
       <Button variant="outline" size="icon" onclick={() => (showSettings = true)} title="Chat settings">
         <Settings />
       </Button>
@@ -582,6 +726,9 @@
       {:else}
         <div class="mx-auto w-full max-w-3xl py-2">
         {#each messages as message, idx (idx)}
+          {#if message.role === "tool"}
+            {#if message.media}<MediaToolCard media={message.media} />{/if}
+          {:else if !isToolCallOnlyTurn(message)}
           <ChatMessageComponent
             role={message.role}
             content={message.content}
@@ -597,6 +744,7 @@
               ? () => regenerateFromIndex(idx - 1)
               : undefined}
           />
+          {/if}
         {/each}
         </div>
       {/if}
