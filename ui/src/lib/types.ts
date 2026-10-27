@@ -444,9 +444,15 @@ export interface MediaInfo {
   model: string;
   size?: string;
   seconds?: number;
-  /** The image job id (/api/jobs) or the video id (/v1/videos), once the job exists. */
+  /** The llama-swap job id (/api/jobs/<jobKind>/<jobId>), once the job exists. */
   jobId?: string;
+  /** Which /api/jobs kind jobId belongs to; images or videos when unset (older chats). */
+  jobKind?: "images" | "edits" | "videos";
   keys?: string[];
+  /** The generated pictures' ids (img1, img2, ...), parallel to keys; the model names them in later calls. */
+  ids?: string[];
+  /** The ids of the pictures this call started from (an edit's sources, a video's start picture). */
+  sources?: string[];
   error?: string;
 }
 

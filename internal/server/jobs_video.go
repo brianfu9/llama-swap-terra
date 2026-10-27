@@ -41,10 +41,10 @@ var (
 var videoFailedStatuses = map[string]bool{"failed": true, "error": true, "cancelled": true, "canceled": true}
 
 // multipartModel returns the "model" field of a multipart/form-data body.
-func multipartModel(contentType string, body []byte) (string, error) {
+func multipartModel(contentType string, body []byte, kind string) (string, error) {
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
-		return "", errors.New("a video job must be multipart/form-data")
+		return "", fmt.Errorf("a %s job must be multipart/form-data", kind)
 	}
 	mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
 	for {

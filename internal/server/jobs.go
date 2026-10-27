@@ -39,8 +39,12 @@ import (
 type jobKind struct {
 	// path is the endpoint the job posts its body to.
 	path string
-	// video marks the multipart /v1/videos job, which the backend runs
-	// asynchronously; see jobs_video.go.
+	// multipart marks a job whose body is a multipart form, forwarded
+	// unchanged; its model is the form's "model" field and reload_model comes
+	// in the query.
+	multipart bool
+	// video marks the /v1/videos job, which the backend runs asynchronously;
+	// see jobs_video.go.
 	video bool
 	// maxBody caps the job's request body.
 	maxBody int64
@@ -50,8 +54,9 @@ type jobKind struct {
 var jobKinds = map[string]jobKind{
 	"images":        {path: "/v1/images/generations", maxBody: jobMaxBody},
 	"sdapi-txt2img": {path: "/sdapi/v1/txt2img", maxBody: jobMaxBody},
-	// A video job may carry a reference picture or clip.
-	"videos": {path: "/v1/videos", video: true, maxBody: 64 << 20},
+	// An edit carries its source pictures, a video job maybe a start picture.
+	"edits":  {path: "/v1/images/edits", multipart: true, maxBody: 64 << 20},
+	"videos": {path: "/v1/videos", multipart: true, video: true, maxBody: 64 << 20},
 }
 
 const (
@@ -213,11 +218,11 @@ func (s *Server) handleAPIJobCreate(w http.ResponseWriter, r *http.Request) {
 		ReloadModel string `json:"reload_model"`
 	}
 	contentType := "application/json"
-	if jk.video {
-		// A video job forwards its multipart form unchanged, so the reload
-		// model comes in the query instead.
+	if jk.multipart {
+		// A multipart job forwards its form unchanged, so the reload model
+		// comes in the query instead.
 		contentType = r.Header.Get("Content-Type")
-		model, err := multipartModel(contentType, body)
+		model, err := multipartModel(contentType, body, kind)
 		if err != nil {
 			swaputil.SendResponse(w, r, http.StatusBadRequest, err.Error())
 			return
@@ -230,7 +235,7 @@ func (s *Server) handleAPIJobCreate(w http.ResponseWriter, r *http.Request) {
 	if q := r.URL.Query().Get("reload_model"); q != "" {
 		probe.ReloadModel = q
 	}
-	if !jk.video && bytes.Contains(body, []byte(`"reload_model"`)) {
+	if !jk.multipart && bytes.Contains(body, []byte(`"reload_model"`)) {
 		// Backends refuse fields they do not know, so reload_model stops here.
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(body, &fields); err != nil {
