@@ -103,6 +103,16 @@ describe("runMediaTool", () => {
     expect(putMedia).toHaveBeenCalledTimes(2);
   });
 
+  it("asks the image job to reload the chat model", async () => {
+    const f = vi
+      .fn()
+      .mockResolvedValueOnce(reply(202, { id: "job_1" }))
+      .mockResolvedValueOnce(reply(200, { status: "succeeded", result: { data: [{ b64_json: "AAAA" }] } }));
+    vi.stubGlobal("fetch", f);
+    await runMediaTool("call_5", IMAGE_TOOL, '{"prompt":"x"}', { ...ctx, reloadModel: "rad" }, new AbortController().signal, () => {});
+    expect(JSON.parse(f.mock.calls[0][1].body)).toMatchObject({ model: "qwen-image", reload_model: "rad" });
+  });
+
   it("runs a video through /v1/videos and stores the clip", async () => {
     const f = vi
       .fn()

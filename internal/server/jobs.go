@@ -12,6 +12,12 @@ package server
 //
 // The job replays the request through s.handler, so it goes through the same
 // auth, model swap, inflight tracking and activity log as a direct request.
+//
+// A body may carry "reload_model": after the job succeeds, and when no other
+// job is still running, the job loads that model again (GET /upstream/<id>/,
+// as the UI's Load button does). The Chat tab uses it to bring its chat model
+// back while a locked phone is not polling. The field is removed before the
+// body is forwarded.
 
 import (
 	"bytes"
@@ -21,6 +27,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"sync"
 	"time"
@@ -59,7 +66,9 @@ type job struct {
 	StatusCode int
 	Body       []byte
 	Error      string
-	cancel     context.CancelFunc
+	// ReloadModel is loaded again after the job succeeds (see above).
+	ReloadModel string
+	cancel      context.CancelFunc
 	// cancelled is set by a DELETE while the job runs. Status stays
 	// running until runJob records the end, so pruning never sees a
 	// finished job without a FinishedAt.
@@ -179,11 +188,25 @@ func (s *Server) handleAPIJobCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var probe struct {
-		Model string `json:"model"`
+		Model       string `json:"model"`
+		ReloadModel string `json:"reload_model"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil || probe.Model == "" {
 		swaputil.SendResponse(w, r, http.StatusBadRequest, "the body must be JSON with a model")
 		return
+	}
+	if probe.ReloadModel != "" {
+		// Backends refuse fields they do not know, so reload_model stops here.
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			swaputil.SendResponse(w, r, http.StatusBadRequest, "the body must be a JSON object")
+			return
+		}
+		delete(fields, "reload_model")
+		if body, err = json.Marshal(fields); err != nil {
+			swaputil.SendResponse(w, r, http.StatusInternalServerError, "re-encoding the body failed")
+			return
+		}
 	}
 
 	ctx, cancel := context.WithCancel(s.shutdownCtx)
@@ -203,12 +226,13 @@ func (s *Server) handleAPIJobCreate(w http.ResponseWriter, r *http.Request) {
 
 	st := s.jobs
 	j := &job{
-		ID:        newJobID(),
-		Kind:      kind,
-		Model:     probe.Model,
-		Status:    jobStatusRunning,
-		CreatedAt: st.now(),
-		cancel:    cancel,
+		ID:          newJobID(),
+		Kind:        kind,
+		Model:       probe.Model,
+		Status:      jobStatusRunning,
+		CreatedAt:   st.now(),
+		ReloadModel: probe.ReloadModel,
+		cancel:      cancel,
 	}
 	st.mu.Lock()
 	st.pruneLocked()
@@ -240,7 +264,6 @@ func (s *Server) runJob(j *job, inner *http.Request) {
 
 	st := s.jobs
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	j.FinishedAt = st.now()
 	j.StatusCode = rec.status
 	switch {
@@ -254,6 +277,40 @@ func (s *Server) runJob(j *job, inner *http.Request) {
 		j.Error = rec.body.String()
 	}
 	s.logs.ProxyLogs.Infof("job %s (%s, %s) %s after %s", j.ID, j.Kind, j.Model, j.Status, j.FinishedAt.Sub(j.CreatedAt).Round(time.Millisecond))
+	reload := j.ReloadModel != "" && j.Status == jobStatusSucceeded && !st.otherRunningLocked(j.ID)
+	st.mu.Unlock()
+
+	if reload {
+		s.reloadAfterJob(j, inner.Header)
+	}
+}
+
+// otherRunningLocked reports whether a job other than id is still running. A
+// reload then would swap the media model out from under it; the last job to
+// finish does the reload instead.
+func (st *jobStore) otherRunningLocked(id string) bool {
+	for other, j := range st.jobs {
+		if other != id && j.Status == jobStatusRunning {
+			return true
+		}
+	}
+	return false
+}
+
+// reloadAfterJob loads j.ReloadModel through the normal handler, with the
+// job's own auth headers. The result only goes to the log: the picture is
+// already stored, and a failed reload just means the next chat loads the
+// model itself.
+func (s *Server) reloadAfterJob(j *job, header http.Header) {
+	req, err := http.NewRequestWithContext(s.shutdownCtx, http.MethodGet, "/upstream/"+url.PathEscape(j.ReloadModel)+"/", http.NoBody)
+	if err != nil {
+		return
+	}
+	req.Header = header.Clone()
+	req.Header.Del("Content-Type")
+	rec := &jobRecorder{header: make(http.Header)}
+	s.handler.ServeHTTP(rec, req)
+	s.logs.ProxyLogs.Infof("job %s: reloaded %s after the job, status %d", j.ID, j.ReloadModel, rec.status)
 }
 
 // handleAPIJobGet returns a job, with its result once it has succeeded.

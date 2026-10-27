@@ -1,6 +1,6 @@
 <script lang="ts">
   import { get } from "svelte/store";
-  import { hasListedModels, playgroundModels } from "../../stores/api";
+  import { hasListedModels, loadModel, playgroundModels } from "../../stores/api";
   import { persistentStore } from "../../stores/persistent";
   import { showGenerationStats } from "../../stores/generationStats";
   import { streamChatCompletion, type Endpoint } from "../../lib/chatApi";
@@ -277,9 +277,12 @@
    * after them: the media model has unloaded the chat model, and swapping it
    * back just to comment is not worth the reload.
    */
-  async function runToolCalls(calls: ReturnType<typeof finalizeToolCalls>, signal: AbortSignal) {
+  async function runToolCalls(calls: ReturnType<typeof finalizeToolCalls>, signal: AbortSignal, chatModel: string) {
     const ctx = mediaContext();
-    for (const call of calls) {
+    for (const [i, call] of calls.entries()) {
+      // Only the last call brings the chat model back, so a turn with several
+      // calls does not load it between them.
+      const last = i === calls.length - 1;
       const placeholder: MediaInfo = {
         kind: call.function.name === "generate_video" ? "video" : "image",
         status: "running",
@@ -298,9 +301,18 @@
         patchToolMessage(call.id, { ...placeholder, status: "cancelled" });
         continue;
       }
-      await runMediaTool(call.id, call.function.name, call.function.arguments, ctx, signal, (m) =>
-        patchToolMessage(call.id, m)
+      const result = await runMediaTool(
+        call.id,
+        call.function.name,
+        call.function.arguments,
+        { ...ctx, reloadModel: last ? chatModel : undefined },
+        signal,
+        (m) => patchToolMessage(call.id, m)
       );
+      // A picture's job reloads the chat model on the server; a video's cannot.
+      if (last && result.kind === "video" && result.status === "done") {
+        loadModel(chatModel).catch(() => {});
+      }
     }
   }
 
@@ -451,7 +463,7 @@
           isReasoning = false;
         }
         patchAt(aIdx, { tool_calls: calls, stats: currentStats(tracker, performance.now(), false) });
-        await runToolCalls(calls, abortController.signal);
+        await runToolCalls(calls, abortController.signal, $selectedModelStore);
       }
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") markCancelled(tracker);
