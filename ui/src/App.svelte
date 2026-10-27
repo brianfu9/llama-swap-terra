@@ -156,7 +156,10 @@
     onWidthChange={(w) => sidebarWidth.set(w)}
   >
     <AppSidebar />
-    <Sidebar.Inset class="h-screen min-w-0 overflow-hidden">
+    <!-- h-dvh, not h-screen: on a phone 100vh is the height with the browser's
+         bars hidden, so the bottom of the page (a tab's prompt box) sat under
+         the toolbar and the page had to scroll to reach it. -->
+    <Sidebar.Inset class="h-dvh min-w-0 overflow-hidden">
       <header
         class="bg-background sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b px-4"
       >
@@ -215,7 +218,7 @@
         {/if}
       </header>
 
-      <main class="min-h-0 flex-1 overflow-auto p-4">
+      <main class="min-h-0 flex-1 overflow-auto p-4 max-sm:p-2">
         <div class="h-full" class:hidden={$currentRoute !== "/playground"}>
           {#if PlaygroundComponent}
             <PlaygroundComponent />
