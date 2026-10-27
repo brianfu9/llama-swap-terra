@@ -20,9 +20,13 @@ describe("selectedPlaygroundTab", () => {
   });
 
   it("leaves a tab that still exists alone", () => {
-    selectedPlaygroundTab.set("rerank");
+    selectedPlaygroundTab.set("video");
     resetUnknownPlaygroundTab();
-    expect(get(selectedPlaygroundTab)).toBe("rerank");
+    expect(get(selectedPlaygroundTab)).toBe("video");
+  });
+
+  it("offers only chat, images and video (terra fork)", () => {
+    expect(playgroundTabs.map((tab) => tab.id)).toEqual(["chat", "images", "video"]);
   });
 
   it("no longer offers Help as a tab", () => {

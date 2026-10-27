@@ -2,11 +2,7 @@
   import type { Component } from "svelte";
   import ChatInterface from "../components/playground/ChatInterface.svelte";
   import ImageInterface from "../components/playground/ImageInterface.svelte";
-  import AudioInterface from "../components/playground/AudioInterface.svelte";
-  import SpeechInterface from "../components/playground/SpeechInterface.svelte";
   import VideoInterface from "../components/playground/VideoInterface.svelte";
-  import RerankInterface from "../components/playground/RerankInterface.svelte";
-  import ConcurrencyInterface from "../components/playground/ConcurrencyInterface.svelte";
   import * as Card from "$lib/components/ui/card/index.js";
   import { Tabs, TabsList, TabsTrigger } from "$lib/components/ui/tabs/index.js";
   import { refreshPlaygroundModels } from "$lib/hooks/playground-models.svelte";
@@ -15,11 +11,7 @@
   const tabComponents: Record<PlaygroundTab, Component> = {
     chat: ChatInterface,
     images: ImageInterface,
-    speech: SpeechInterface,
-    audio: AudioInterface,
     video: VideoInterface,
-    rerank: RerankInterface,
-    concurrency: ConcurrencyInterface,
   };
 
   refreshPlaygroundModels();

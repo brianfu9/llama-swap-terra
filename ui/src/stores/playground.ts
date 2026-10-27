@@ -1,16 +1,12 @@
 import { get } from "svelte/store";
 import { persistentStore } from "./persistent";
 
-export type PlaygroundTab = "chat" | "images" | "speech" | "audio" | "video" | "rerank" | "concurrency";
+export type PlaygroundTab = "chat" | "images" | "video";
 
 export const playgroundTabs: { id: PlaygroundTab; label: string }[] = [
   { id: "chat", label: "Chat" },
   { id: "images", label: "Images" },
   { id: "video", label: "Video" },
-  { id: "speech", label: "Speech" },
-  { id: "audio", label: "Transcription" },
-  { id: "rerank", label: "Rerank" },
-  { id: "concurrency", label: "Load Test" },
 ];
 
 export const selectedPlaygroundTab = persistentStore<PlaygroundTab>("playground-selected-tab", "chat");
@@ -18,7 +14,8 @@ export const selectedPlaygroundTab = persistentStore<PlaygroundTab>("playground-
 /**
  * Drop a stored tab that no longer exists.
  *
- * "docs" was a tab here until Help became its own page. A browser that last
+ * "docs" was a tab here until Help became its own page; terra fork: speech,
+ * audio, rerank and concurrency were dropped too. A browser that last
  * left the Playground on it would select a tab with nothing behind it: every
  * panel hidden, and a header reading "Playground /".
  */
