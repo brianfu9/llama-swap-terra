@@ -18,7 +18,8 @@
     runMediaTool,
     type MediaToolContext,
   } from "../../lib/mediaTools";
-  import { pruneMedia } from "../../lib/mediaStore";
+  import { getMedia, pruneMedia } from "../../lib/mediaStore";
+  import { attachments, generated, maxImageNumber, messagesForModel, pictureIds } from "../../lib/chatMedia";
   import MediaToolCard from "./MediaToolCard.svelte";
   import { isSubmitEnter } from "../../lib/ime";
   import ChatMessageComponent from "./ChatMessage.svelte";
@@ -267,7 +268,57 @@
       videoModel: read("playground-video-model", ""),
       videoSize: read("playground-video-size", "960x544"),
       videoSeconds: read("playground-video-seconds", 5),
+      resolveImage,
+      imageIds: () => pictureIds(messages),
+      nextImageId,
     };
+  }
+
+  /** A picture's bytes by id: att<n> from the attachments, img<n> from IndexedDB. */
+  async function resolveImage(id: string): Promise<Blob | null> {
+    const att = attachments(messages).find((a) => a.id === id);
+    if (att) {
+      try {
+        return await (await fetch(att.url)).blob();
+      } catch {
+        return null;
+      }
+    }
+    const gen = generated(messages).find((g) => g.id === id);
+    return gen ? ((await getMedia(gen.key).catch(() => undefined)) ?? null) : null;
+  }
+
+  // img ids are handed out here, so calls running at once never share one.
+  let lastImageNumber = 0;
+  function nextImageId(): string {
+    lastImageNumber = Math.max(lastImageNumber, maxImageNumber(messages)) + 1;
+    return `img${lastImageNumber}`;
+  }
+
+  /**
+   * A generated picture as the chat model is shown it: at most 1024 px a side,
+   * as JPEG, so a 2048x2048 picture costs ~1k vision tokens rather than ~4k.
+   * Cached by key: the pictures never change, and every later turn resends them.
+   */
+  const modelPictures = new Map<string, Promise<string | null>>();
+  function pictureForModel(key: string): Promise<string | null> {
+    let p = modelPictures.get(key);
+    if (!p) {
+      p = (async () => {
+        const blob = await getMedia(key).catch(() => undefined);
+        if (!blob) return null;
+        const bmp = await createImageBitmap(blob);
+        const scale = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(bmp.width * scale);
+        canvas.height = Math.round(bmp.height * scale);
+        canvas.getContext("2d")!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        bmp.close();
+        return canvas.toDataURL("image/jpeg", 0.85);
+      })().catch(() => null);
+      modelPictures.set(key, p);
+    }
+    return p;
   }
 
   const toolsActive = $derived($mediaToolsStore && $endpointStore === "v1/chat/completions");
@@ -322,7 +373,9 @@
     const signal = abortController.signal;
     try {
       await Promise.all(
-        running.map((m) => finishMediaTool(m.tool_call_id!, m.media!, signal, (media) => patchToolMessage(m.tool_call_id!, media)))
+        running.map((m) =>
+          finishMediaTool(m.tool_call_id!, m.media!, signal, (media) => patchToolMessage(m.tool_call_id!, media), nextImageId)
+        )
       );
     } finally {
       isStreaming = false;
@@ -376,13 +429,17 @@
     patchLast({ content: lastText() + `\n\n**Error:** ${message}`, interrupted: "error" });
   }
 
-  /** The conversation to send, with the optional system prompt prepended. */
-  function requestMessages(): ChatMessage[] {
+  /**
+   * The conversation to send, with the optional system prompt prepended. The
+   * pictures get their ids, and the model is shown the pictures its tool calls
+   * made (lib/chatMedia.ts).
+   */
+  async function requestMessages(): Promise<ChatMessage[]> {
     const out: ChatMessage[] = [];
     if ($systemPromptStore.trim()) {
       out.push({ role: "system", content: $systemPromptStore.trim() });
     }
-    out.push(...messages.slice(0, -1)); // everything but the empty placeholder
+    out.push(...(await messagesForModel(messages.slice(0, -1), pictureForModel))); // all but the empty placeholder
     return out;
   }
 
@@ -429,7 +486,7 @@
     try {
       const stream = streamChatCompletion(
         $selectedModelStore,
-        requestMessages(),
+        await requestMessages(),
         abortController.signal,
         {
           temperature: $temperatureStore,

@@ -7,7 +7,7 @@ import { playgroundSessionHeaders } from "./playgroundSession";
  * is still made when a phone locks or the browser drops the page. The client
  * keeps the job id and fetches the result when it comes back.
  */
-export type ImageJobKind = "images" | "sdapi-txt2img" | "videos";
+export type ImageJobKind = "images" | "sdapi-txt2img" | "edits" | "videos";
 
 export interface ImageJob<T = unknown> {
   id: string;
@@ -58,22 +58,33 @@ export async function getImageJob<T>(kind: ImageJobKind, id: string, signal?: Ab
 }
 
 /**
- * Starts a video job from a /v1/videos form. llama-swap holds the video model
- * for the whole job, so another client cannot swap it out mid-video, and
- * loads reloadModel again once the clip is done.
+ * Starts a job from a multipart form: an edit (/v1/images/edits, the source
+ * pictures as image[] files) or a video (/v1/videos; llama-swap holds the
+ * video model for the whole job, so another client cannot swap it out
+ * mid-video). reloadModel is loaded again once the job is done.
  */
-export async function createVideoServerJob(form: FormData, reloadModel?: string, signal?: AbortSignal): Promise<ImageJob> {
+export async function createFormServerJob(
+  kind: "edits" | "videos",
+  form: FormData,
+  reloadModel?: string,
+  signal?: AbortSignal
+): Promise<ImageJob> {
   const query = reloadModel ? `?reload_model=${encodeURIComponent(reloadModel)}` : "";
-  const response = await fetch(`/api/jobs/videos${query}`, {
+  const response = await fetch(`/api/jobs/${kind}${query}`, {
     method: "POST",
     headers: playgroundSessionHeaders,
     body: form,
     signal,
   });
   if (!response.ok) {
-    throw new Error(`Video job error: ${response.status} - ${await response.text()}`);
+    throw new Error(`${kind === "edits" ? "Edit" : "Video"} job error: ${response.status} - ${await response.text()}`);
   }
   return response.json();
+}
+
+/** Starts a video job from a /v1/videos form; see createFormServerJob. */
+export function createVideoServerJob(form: FormData, reloadModel?: string, signal?: AbortSignal): Promise<ImageJob> {
+  return createFormServerJob("videos", form, reloadModel, signal);
 }
 
 /** A finished job's result bytes (a video job's clip). */
@@ -150,7 +161,7 @@ export async function waitForJob<T>(kind: ImageJobKind, id: string, signal: Abor
     if (job) {
       if (job.status === "succeeded") return job;
       if (job.status === "failed") {
-        throw new Error(`${kind === "videos" ? "Video" : "Image"} API error: ${job.status_code ?? ""} - ${job.error ?? "unknown error"}`);
+        throw new Error(`${kind === "videos" ? "Video" : kind === "edits" ? "Edit" : "Image"} API error: ${job.status_code ?? ""} - ${job.error ?? "unknown error"}`);
       }
       if (job.status === "cancelled") throw new DOMException("Cancelled", "AbortError");
     }

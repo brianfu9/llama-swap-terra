@@ -46,7 +46,7 @@
     };
   });
 
-  const label = $derived(media.kind === "image" ? "Image" : "Video");
+  const label = $derived(media.kind === "video" ? "Video" : media.sources?.length ? "Edit" : "Image");
   const detail = $derived(
     [media.size, media.kind === "video" && media.seconds ? `${media.seconds.toFixed(1)} s` : "", media.model]
       .filter(Boolean)
@@ -68,6 +68,7 @@
     {#if media.kind === "image"}<ImageIcon class="size-3.5" />{:else}<VideoIcon class="size-3.5" />{/if}
     <span class="text-foreground font-medium">{label}</span>
     {#if detail}<span class="truncate">{detail}</span>{/if}
+    {#if media.sources?.length}<span class="shrink-0">from {media.sources.join(", ")}</span>{/if}
   </div>
   {#if media.prompt}
     <p class="text-muted-foreground mb-2 line-clamp-3 text-sm">{media.prompt}</p>
@@ -91,6 +92,10 @@
           <button class="block w-full cursor-zoom-in border-0 bg-transparent p-0" onclick={() => (fullscreen = url)} aria-label="View fullscreen">
             <img src={url} alt="Generated {i + 1}" class="max-h-[60dvh] w-full rounded-lg object-contain" />
           </button>
+          {#if media.ids?.[i]}
+            <!-- The id the chat model (and the user) can name this picture by. -->
+            <span class="absolute top-2 left-2 rounded bg-black/60 px-1.5 py-0.5 font-mono text-xs text-white">{media.ids[i]}</span>
+          {/if}
           <Button
             variant="secondary"
             size="icon"

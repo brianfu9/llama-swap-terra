@@ -4,6 +4,7 @@ vi.mock("./mediaStore", () => ({ putMedia: vi.fn().mockResolvedValue("k") }));
 
 import { putMedia } from "./mediaStore";
 import {
+  EDIT_TOOL,
   IMAGE_TOOL,
   MEDIA_TOOLS,
   VIDEO_TOOL,
@@ -33,12 +34,11 @@ function reply(status: number, body: unknown) {
 }
 
 describe("MEDIA_TOOLS", () => {
-  it("defines generate_image and generate_video as OpenAI functions", () => {
-    expect(MEDIA_TOOLS.map((t) => t.function.name)).toEqual([IMAGE_TOOL, VIDEO_TOOL]);
-    for (const t of MEDIA_TOOLS) {
-      expect(t.type).toBe("function");
-      expect((t.function.parameters as { required: string[] }).required).toEqual(["prompt"]);
-    }
+  it("defines generate_image, edit_image and generate_video as OpenAI functions", () => {
+    expect(MEDIA_TOOLS.map((t) => t.function.name)).toEqual([IMAGE_TOOL, EDIT_TOOL, VIDEO_TOOL]);
+    const required = MEDIA_TOOLS.map((t) => (t.function.parameters as { required: string[] }).required);
+    expect(required).toEqual([["prompt"], ["images", "prompt"], ["prompt"]]);
+    for (const t of MEDIA_TOOLS) expect(t.type).toBe("function");
   });
 });
 
@@ -70,10 +70,30 @@ describe("parseMediaArgs", () => {
   });
 });
 
+describe("parseMediaArgs for edits and image to video", () => {
+  it("takes picture ids, a lone id, and leaves the size to the source", () => {
+    expect(parseMediaArgs(EDIT_TOOL, { prompt: "night", images: ["att1", "img2"] }, ctx)).toEqual({
+      kind: "edit", prompt: "night", images: ["att1", "img2"], size: undefined, n: 1, negativePrompt: undefined,
+    });
+    expect(parseMediaArgs(EDIT_TOOL, { prompt: "night", images: "att1" }, ctx)).toMatchObject({ images: ["att1"] });
+    expect(parseMediaArgs(EDIT_TOOL, { prompt: "night", images: [] }, ctx)).toHaveProperty("error");
+    expect(parseMediaArgs(EDIT_TOOL, { prompt: "x", images: ["a", "b", "c", "d"] }, ctx)).toHaveProperty("error");
+  });
+
+  it("passes a video's start picture", () => {
+    expect(parseMediaArgs(VIDEO_TOOL, { prompt: "waves", image: "img1" }, ctx)).toMatchObject({ kind: "video", image: "img1" });
+  });
+});
+
 describe("mediaResultText", () => {
   it("tells the model what was shown", () => {
     const m: MediaInfo = { kind: "image", status: "done", prompt: "a cat", model: "qwen-image", size: "1024x1024", keys: ["a", "b"] };
-    expect(mediaResultText(m)).toBe("Generated 2 picture(s), 1024x1024 with qwen-image. They are shown to the user. Prompt: a cat");
+    expect(mediaResultText(m)).toBe(
+      "Generated 2 picture(s), 1024x1024 with qwen-image. They are shown to the user. You see them in your next turn. Prompt: a cat"
+    );
+    expect(mediaResultText({ ...m, ids: ["img3", "img4"], sources: ["att1"] })).toBe(
+      "Edited 2 picture(s) img3, img4 from att1, 1024x1024 with qwen-image. They are shown to the user. You see them in your next turn. Prompt: a cat"
+    );
     expect(mediaResultText({ ...m, status: "error", error: "boom" })).toBe("Error: boom");
   });
 });
@@ -129,6 +149,55 @@ describe("runMediaTool", () => {
     expect(f.mock.calls[1][0]).toBe("/api/jobs/videos/job_v");
     expect(f.mock.calls[2][0]).toBe("/api/jobs/videos/job_v/content");
     expect(putMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it("edits pictures through /api/jobs/edits and names the results", async () => {
+    const f = vi
+      .fn()
+      .mockResolvedValueOnce(reply(202, { id: "job_e" }))
+      .mockResolvedValueOnce(reply(200, { status: "succeeded", result: { data: [{ b64_json: "AAAA" }] } }));
+    vi.stubGlobal("fetch", f);
+    const resolveImage = vi.fn(async (id: string) => (id === "att1" ? new Blob(["png"], { type: "image/png" }) : null));
+    let n = 4;
+    const out = await runMediaTool(
+      "call_6", EDIT_TOOL, '{"prompt":"make it night","images":["att1"]}',
+      { ...ctx, reloadModel: "rad", resolveImage, nextImageId: () => `img${++n}` },
+      new AbortController().signal, () => {}
+    );
+    expect(out).toMatchObject({ status: "done", jobKind: "edits", sources: ["att1"], ids: ["img5"], keys: ["call_6/0"] });
+    expect(f.mock.calls[0][0]).toBe("/api/jobs/edits?reload_model=rad");
+    const form = f.mock.calls[0][1].body as FormData;
+    expect(form.get("model")).toBe("qwen-image");
+    expect(form.get("prompt")).toBe("make it night");
+    expect((form.get("image[]") as File).name).toBe("att1.png");
+    expect(form.get("size")).toBeNull();
+    expect(f.mock.calls[1][0]).toBe("/api/jobs/edits/job_e");
+  });
+
+  it("sends a video's start picture as input_reference", async () => {
+    const f = vi
+      .fn()
+      .mockResolvedValueOnce(reply(202, { id: "job_v" }))
+      .mockResolvedValueOnce(reply(200, { status: "succeeded" }))
+      .mockResolvedValueOnce(reply(200, {}));
+    vi.stubGlobal("fetch", f);
+    const resolveImage = async () => new Blob(["png"], { type: "image/png" });
+    const out = await runMediaTool("call_7", VIDEO_TOOL, '{"prompt":"waves","image":"img1"}', { ...ctx, resolveImage }, new AbortController().signal, () => {});
+    expect(out).toMatchObject({ status: "done", sources: ["img1"] });
+    expect(((f.mock.calls[0][1].body as FormData).get("input_reference") as File).name).toBe("img1.png");
+  });
+
+  it("names the pictures the chat has when an id is wrong", async () => {
+    const f = vi.fn();
+    vi.stubGlobal("fetch", f);
+    const out = await runMediaTool(
+      "call_8", EDIT_TOOL, '{"prompt":"x","images":["img9"]}',
+      { ...ctx, resolveImage: async () => null, imageIds: () => ["att1", "img1"] },
+      new AbortController().signal, () => {}
+    );
+    expect(out.status).toBe("error");
+    expect(out.error).toBe("no picture img9; the chat has att1, img1");
+    expect(f).not.toHaveBeenCalled();
   });
 
   it("reports bad arguments without calling the server", async () => {

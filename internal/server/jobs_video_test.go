@@ -226,3 +226,73 @@ func TestServer_VideoJob_RejectsABodyWithoutAModel(t *testing.T) {
 		}
 	}
 }
+
+func TestServer_EditJob_ForwardsTheFormAndReloads(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	var gotPrompt, gotImage string
+	local := newStubRouter([]string{"qwen", "chat"}, "")
+	local.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path == "/v1/images/edits" {
+			if err := r.ParseMultipartForm(1 << 20); err == nil {
+				gotPrompt = r.FormValue("prompt")
+				if f, _, err := r.FormFile("image[]"); err == nil {
+					b := make([]byte, 16)
+					n, _ := f.Read(b)
+					gotImage = string(b[:n])
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":[{"b64_json":"AAAA"}]}`))
+			return
+		}
+		w.Write([]byte("ok"))
+	}
+	s := newTestServer(local, newStubRouter(nil, ""))
+	s.cfg = config.Config{Models: map[string]config.ModelConfig{"qwen": {}, "chat": {}}}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.WriteField("model", "qwen")
+	mw.WriteField("prompt", "make it night")
+	fw, _ := mw.CreateFormFile("image[]", "src.png")
+	fw.Write([]byte("PNGDATA"))
+	mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/edits?reload_model=chat", bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var v jobView
+	json.Unmarshal(w.Body.Bytes(), &v)
+	if v.Model != "qwen" || v.Kind != "edits" {
+		t.Fatalf("job %+v", v)
+	}
+	done := waitJobDone(t, s, "edits", v.ID)
+	if done.Status != jobStatusSucceeded || string(done.Result) != `{"data":[{"b64_json":"AAAA"}]}` {
+		t.Fatalf("job %+v", done)
+	}
+	if gotPrompt != "make it night" || gotImage != "PNGDATA" {
+		t.Fatalf("upstream got prompt %q image %q", gotPrompt, gotImage)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(seen)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 || seen[0] != "POST /v1/images/edits" || seen[1] != "GET /" {
+		t.Fatalf("requests %v", seen)
+	}
+}
