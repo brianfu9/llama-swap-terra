@@ -184,6 +184,11 @@ type jobRecorder struct {
 
 func (r *jobRecorder) Header() http.Header { return r.header }
 func (r *jobRecorder) WriteHeader(code int) {
+	// An informational response (100 Continue, 103 Early Hints) is not the
+	// answer; the reverse proxy passes those on before the real status.
+	if code < 200 {
+		return
+	}
 	if r.status == 0 {
 		r.status = code
 	}
@@ -261,6 +266,9 @@ func (s *Server) handleAPIJobCreate(w http.ResponseWriter, r *http.Request) {
 	inner.Header.Set("Content-Type", contentType)
 	inner.Header.Del("Content-Length")
 	inner.Header.Del("Accept-Encoding")
+	// The client's Expect: 100-continue was for its own upload, which is done;
+	// forwarded, it makes the backend answer 100 first.
+	inner.Header.Del("Expect")
 	inner.RemoteAddr = r.RemoteAddr
 	inner.Host = r.Host
 
