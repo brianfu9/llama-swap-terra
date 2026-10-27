@@ -1,6 +1,6 @@
 <script lang="ts">
   import { get } from "svelte/store";
-  import { hasListedModels, loadModel, playgroundModels } from "../../stores/api";
+  import { hasListedModels, playgroundModels } from "../../stores/api";
   import { persistentStore } from "../../stores/persistent";
   import { showGenerationStats } from "../../stores/generationStats";
   import { streamChatCompletion, type Endpoint } from "../../lib/chatApi";
@@ -283,7 +283,6 @@
    */
   async function runToolCalls(calls: ReturnType<typeof finalizeToolCalls>, signal: AbortSignal, chatModel: string) {
     const ctx = mediaContext();
-    const hasVideo = calls.some((c) => c.function.name === "generate_video");
     messages = [
       ...messages,
       ...calls.map((call): PlainMessage => {
@@ -296,25 +295,22 @@
         return { role: "tool", tool_call_id: call.id, name: call.function.name, content: mediaResultText(placeholder), media: placeholder };
       }),
     ];
-    // Every image job carries the reload; the server does it after the last
-    // one to finish. With a video in the turn the browser reloads instead,
-    // after everything, since the server cannot see the video end.
-    const imageCtx = { ...ctx, reloadModel: hasVideo ? undefined : chatModel };
-    const results = await Promise.all(
+    // Every job carries the reload; llama-swap does it after the last running
+    // job ends, so a turn with several calls never loads the chat model
+    // between them.
+    const jobCtx = { ...ctx, reloadModel: chatModel };
+    await Promise.all(
       calls.map((call) => {
         if (!isMediaTool(call.function.name)) {
           const failed: MediaInfo = { kind: "image", status: "error", prompt: "", model: "", error: `Unknown tool ${call.function.name}.` };
           patchToolMessage(call.id, failed);
           return failed;
         }
-        return runMediaTool(call.id, call.function.name, call.function.arguments, imageCtx, signal, (m) =>
+        return runMediaTool(call.id, call.function.name, call.function.arguments, jobCtx, signal, (m) =>
           patchToolMessage(call.id, m)
         );
       })
     );
-    if (hasVideo && results.some((r) => r.status === "done")) {
-      loadModel(chatModel).catch(() => {});
-    }
   }
 
   /** Picks up media jobs that were still running when the page was reloaded. */

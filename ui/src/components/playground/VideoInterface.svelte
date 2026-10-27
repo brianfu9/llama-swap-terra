@@ -2,12 +2,19 @@
   import { hasListedModels } from "../../stores/api";
   import { persistentStore } from "../../stores/persistent";
   import { createPlaygroundInterface } from "../../lib/playgroundInterface";
-  import { createVideoSync, generateVideoAsync } from "../../lib/videoApi";
+  import { get } from "svelte/store";
+  import { buildVideoFormData, createVideoSync } from "../../lib/videoApi";
+  import {
+    createVideoServerJob,
+    deleteImageJob,
+    getJobContent,
+    waitForJob,
+    ImageJobGoneError,
+  } from "../../lib/imageJobs";
   import { playgroundStores } from "../../stores/playgroundActivity";
   import ModelSelector from "./ModelSelector.svelte";
   import ExpandableTextarea from "./ExpandableTextarea.svelte";
   import EmptyState from "../EmptyState.svelte";
-  import type { VideoJob } from "../../lib/types";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
@@ -27,7 +34,17 @@
   const negativePromptStore = persistentStore<string>("playground-video-negative-prompt", "");
   const advancedStore = persistentStore<string>("playground-video-advanced", "");
 
-  let prompt = $state("");
+  // terra fork: async mode runs as a llama-swap job (/api/jobs/videos), which
+  // holds the video model so another client cannot swap it out mid-video.
+  // The job is remembered so a reloaded page picks the clip up again.
+  interface SavedVideoJob {
+    id: string;
+    prompt: string;
+    finished: boolean;
+  }
+  const videoJobStore = persistentStore<SavedVideoJob | null>("playground-video-job", null);
+
+  let prompt = $state(get(videoJobStore)?.prompt ?? "");
   let isGenerating = $derived($busyStore);
   let advancedOpen = $state(false);
   let referenceFile = $state<File | null>(null);
@@ -124,19 +141,57 @@
         advanced,
       };
 
-      const videoBlob =
-        $modeStore === "sync"
-          ? await createVideoSync($selectedModelStore, trimmedPrompt, params, referenceFile, signal)
-          : await generateVideoAsync($selectedModelStore, trimmedPrompt, params, referenceFile, signal, (job: VideoJob) => {
-              jobStatus = job.status;
-            });
-
-      if (generatedVideoUrl) {
-        URL.revokeObjectURL(generatedVideoUrl);
+      if ($modeStore === "sync") {
+        showVideo(await createVideoSync($selectedModelStore, trimmedPrompt, params, referenceFile, signal));
+        return;
       }
-      generatedVideoUrl = URL.createObjectURL(videoBlob);
-      generatedTimestamp = new Date();
+
+      forgetJob();
+      const form = buildVideoFormData($selectedModelStore, trimmedPrompt, params, referenceFile);
+      const job = await createVideoServerJob(form, undefined, signal);
+      const saved: SavedVideoJob = { id: job.id, prompt: trimmedPrompt, finished: false };
+      videoJobStore.set(saved);
+      await awaitVideoJob(saved, signal);
     });
+  }
+
+  function showVideo(blob: Blob) {
+    if (generatedVideoUrl) {
+      URL.revokeObjectURL(generatedVideoUrl);
+    }
+    generatedVideoUrl = URL.createObjectURL(blob);
+    generatedTimestamp = new Date();
+  }
+
+  function forgetJob() {
+    const saved = get(videoJobStore);
+    if (saved) {
+      videoJobStore.set(null);
+      deleteImageJob("videos", saved.id);
+    }
+  }
+
+  async function awaitVideoJob(saved: SavedVideoJob, signal: AbortSignal, quietIfGone = false) {
+    const onAbort = () => forgetJob();
+    signal.addEventListener("abort", onAbort, { once: true });
+    jobStatus = "running";
+    try {
+      await waitForJob("videos", saved.id, signal);
+      showVideo(await getJobContent("videos", saved.id, signal));
+      videoJobStore.set({ ...saved, finished: true });
+    } catch (err) {
+      if (!signal.aborted) videoJobStore.set(null);
+      if (quietIfGone && err instanceof ImageJobGoneError) return;
+      throw err;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  // Pick up the job a previous page load left behind.
+  const pendingVideoJob = get(videoJobStore);
+  if (pendingVideoJob) {
+    iface.run((signal) => awaitVideoJob(pendingVideoJob, signal, pendingVideoJob.finished));
   }
 
   function cancelGeneration() {
@@ -144,6 +199,7 @@
   }
 
   function clearAll() {
+    forgetJob();
     prompt = "";
     referenceFile = null;
     if (generatedVideoUrl) {
@@ -249,7 +305,7 @@
           <div class="inline-block w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mb-2"></div>
           <p>Generating video{jobStatus ? ` (${jobStatus})` : ""}...</p>
           {#if $modeStore === "async"}
-            <p class="text-xs mt-1">Video jobs can take a while to complete.</p>
+            <p class="text-xs mt-1 px-4">This runs on the server and can take minutes. You can lock the phone or leave the page; the clip is kept for an hour.</p>
           {/if}
         </div>
       {:else if $error}

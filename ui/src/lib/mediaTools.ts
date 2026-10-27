@@ -1,15 +1,22 @@
 import type { ToolDefinition } from "./chatApi";
 import type { ImageGenerationResponse, MediaInfo } from "./types";
 import { buildImageRequest } from "./imageApi";
-import { createImageJob, deleteImageJob, waitForImageJob } from "./imageJobs";
-import { createVideoJob, deleteVideo, getVideoContent, getVideoStatus } from "./videoApi";
+import {
+  createImageJob,
+  createVideoServerJob,
+  deleteImageJob,
+  getJobContent,
+  waitForImageJob,
+  waitForJob,
+} from "./imageJobs";
+import { buildVideoFormData } from "./videoApi";
 import { putMedia } from "./mediaStore";
 
 /**
  * terra fork: the Chat tab's generate_image / generate_video tools.
  *
- * The browser runs them, not the model's backend: an image goes through
- * llama-swap's /api/jobs, a video through the backend's own /v1/videos job.
+ * The browser runs them, not the model's backend, as llama-swap jobs
+ * (/api/jobs/images and /api/jobs/videos).
  * Both use the model picked on the Images or Video tab. Loading that model
  * unloads the chat model, so the turn ends when the media is shown instead of
  * swapping the chat model back in just to comment on it. The model gets a
@@ -92,9 +99,9 @@ export interface MediaToolContext {
   videoSize: string;
   videoSeconds: number;
   /**
-   * A model to load again once a picture is done (the chat model). llama-swap
-   * does it at the end of the image job, so it happens while a locked phone is
-   * not polling. Video jobs run in the backend, so the caller reloads after them.
+   * A model to load again once the media is done (the chat model). llama-swap
+   * does it at the end of the job, after the last running job, so it happens
+   * while a locked phone is not polling.
    */
   reloadModel?: string;
 }
@@ -164,10 +171,6 @@ export function mediaResultText(media: MediaInfo): string {
   }
 }
 
-function abortError(): DOMException {
-  return new DOMException("Aborted", "AbortError");
-}
-
 function isAbort(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
@@ -177,45 +180,6 @@ function b64ToBlob(b64: string, type = "image/png"): Blob {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Blob([bytes], { type });
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(abortError());
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(abortError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-const VIDEO_FAILED = new Set(["failed", "error", "cancelled", "canceled"]);
-const VIDEO_POLL_MS = 2000;
-
-/** Polls a video job to the end. Failed polls (a locked phone) are retried; the job runs on regardless. */
-async function waitForVideo(id: string, model: string, signal: AbortSignal): Promise<Blob> {
-  for (;;) {
-    try {
-      const job = await getVideoStatus(id, model, signal);
-      if (job.status === "completed") return await getVideoContent(id, model, signal);
-      if (VIDEO_FAILED.has(job.status)) {
-        const e = job.error;
-        const detail = !e ? "" : typeof e === "string" ? e : (e.message ?? JSON.stringify(e));
-        throw new Error(`video generation ${job.status}${detail ? `: ${detail}` : ""}`);
-      }
-    } catch (err) {
-      if (isAbort(err)) throw err;
-      if (err instanceof Error && err.message.startsWith("video generation")) throw err;
-      // A 404 means the backend lost the job (it was restarted).
-      if (err instanceof Error && /error: 404/.test(err.message)) throw new Error("the video job is gone (the model was restarted)");
-    }
-    await sleep(VIDEO_POLL_MS, signal);
-  }
 }
 
 /**
@@ -229,10 +193,8 @@ export async function finishMediaTool(
   onUpdate: (m: MediaInfo) => void
 ): Promise<MediaInfo> {
   const id = media.jobId!;
-  const onAbort = () => {
-    if (media.kind === "image") deleteImageJob("images", id);
-    else deleteVideo(id, media.model).catch(() => {});
-  };
+  const kind = media.kind === "image" ? "images" : "videos";
+  const onAbort = () => deleteImageJob(kind, id);
   signal.addEventListener("abort", onAbort, { once: true });
   try {
     const keys: string[] = [];
@@ -251,7 +213,8 @@ export async function finishMediaTool(
       }
       if (keys.length === 0) throw new Error("the image model returned no pictures");
     } else {
-      const blob = await waitForVideo(id, media.model, signal);
+      await waitForJob("videos", id, signal);
+      const blob = await getJobContent("videos", id, signal);
       const key = `${callId}/0`;
       await putMedia(key, blob);
       keys.push(key);
@@ -312,7 +275,8 @@ export async function runMediaTool(
       );
       media = { ...media, jobId: job.id };
     } else {
-      const job = await createVideoJob(ctx.videoModel, parsed.prompt, { size: parsed.size, seconds: parsed.seconds }, null, signal);
+      const form = buildVideoFormData(ctx.videoModel, parsed.prompt, { size: parsed.size, seconds: parsed.seconds });
+      const job = await createVideoServerJob(form, ctx.reloadModel, signal);
       media = { ...media, jobId: job.id };
     }
   } catch (err) {

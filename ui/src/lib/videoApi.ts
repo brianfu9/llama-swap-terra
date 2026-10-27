@@ -5,7 +5,7 @@ const TERMINAL_FAILURE_STATUSES = new Set(["failed", "error", "cancelled", "canc
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 const DEFAULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
-function buildVideoFormData(
+export function buildVideoFormData(
   model: string,
   prompt: string,
   params: VideoGenerationParams,

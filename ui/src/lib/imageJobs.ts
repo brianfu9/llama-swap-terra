@@ -7,7 +7,7 @@ import { playgroundSessionHeaders } from "./playgroundSession";
  * is still made when a phone locks or the browser drops the page. The client
  * keeps the job id and fetches the result when it comes back.
  */
-export type ImageJobKind = "images" | "sdapi-txt2img";
+export type ImageJobKind = "images" | "sdapi-txt2img" | "videos";
 
 export interface ImageJob<T = unknown> {
   id: string;
@@ -57,6 +57,35 @@ export async function getImageJob<T>(kind: ImageJobKind, id: string, signal?: Ab
   return response.json();
 }
 
+/**
+ * Starts a video job from a /v1/videos form. llama-swap holds the video model
+ * for the whole job, so another client cannot swap it out mid-video, and
+ * loads reloadModel again once the clip is done.
+ */
+export async function createVideoServerJob(form: FormData, reloadModel?: string, signal?: AbortSignal): Promise<ImageJob> {
+  const query = reloadModel ? `?reload_model=${encodeURIComponent(reloadModel)}` : "";
+  const response = await fetch(`/api/jobs/videos${query}`, {
+    method: "POST",
+    headers: playgroundSessionHeaders,
+    body: form,
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Video job error: ${response.status} - ${await response.text()}`);
+  }
+  return response.json();
+}
+
+/** A finished job's result bytes (a video job's clip). */
+export async function getJobContent(kind: ImageJobKind, id: string, signal?: AbortSignal): Promise<Blob> {
+  const response = await fetch(`${jobUrl(kind, id)}/content`, { headers: playgroundSessionHeaders, signal });
+  if (response.status === 404) throw new ImageJobGoneError(id);
+  if (!response.ok) {
+    throw new Error(`Job content error: ${response.status} - ${await response.text()}`);
+  }
+  return response.blob();
+}
+
 /** Cancels a running job, or forgets a finished one. A missing job is not an error. */
 export async function deleteImageJob(kind: ImageJobKind, id: string): Promise<void> {
   try {
@@ -104,6 +133,13 @@ function sleepUnlessVisible(ms: number, signal: AbortSignal): Promise<void> {
  * regardless. Throws for a failed or cancelled job and when the job is gone.
  */
 export async function waitForImageJob<T>(kind: ImageJobKind, id: string, signal: AbortSignal): Promise<T> {
+  const job = await waitForJob<T>(kind, id, signal);
+  if (job.result === undefined) throw new Error("The image job finished without a JSON result");
+  return job.result;
+}
+
+/** Polls a job until it succeeds and returns it; throws as waitForImageJob does. */
+export async function waitForJob<T>(kind: ImageJobKind, id: string, signal: AbortSignal): Promise<ImageJob<T>> {
   for (;;) {
     let job: ImageJob<T> | null = null;
     try {
@@ -112,12 +148,9 @@ export async function waitForImageJob<T>(kind: ImageJobKind, id: string, signal:
       if (err instanceof ImageJobGoneError || (err instanceof Error && err.name === "AbortError")) throw err;
     }
     if (job) {
-      if (job.status === "succeeded") {
-        if (job.result === undefined) throw new Error("The image job finished without a JSON result");
-        return job.result;
-      }
+      if (job.status === "succeeded") return job;
       if (job.status === "failed") {
-        throw new Error(`Image API error: ${job.status_code ?? ""} - ${job.error ?? "unknown error"}`);
+        throw new Error(`${kind === "videos" ? "Video" : "Image"} API error: ${job.status_code ?? ""} - ${job.error ?? "unknown error"}`);
       }
       if (job.status === "cancelled") throw new DOMException("Cancelled", "AbortError");
     }
