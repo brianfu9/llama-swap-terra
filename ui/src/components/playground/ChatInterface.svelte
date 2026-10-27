@@ -273,46 +273,47 @@
   const toolsActive = $derived($mediaToolsStore && $endpointStore === "v1/chat/completions");
 
   /**
-   * Runs the media tool calls of the assistant turn at aIdx. The turn ends
-   * after them: the media model has unloaded the chat model, and swapping it
-   * back just to comment is not worth the reload.
+   * Runs the media tool calls of a turn. The turn ends after them: the media
+   * model has unloaded the chat model, and swapping it back just to comment
+   * is not worth the reload.
+   *
+   * All calls start at once. Run one by one, each call left a gap between
+   * jobs in which any queued request for another model (another client's
+   * chat) swapped its model in, and the next picture waited for it.
    */
   async function runToolCalls(calls: ReturnType<typeof finalizeToolCalls>, signal: AbortSignal, chatModel: string) {
     const ctx = mediaContext();
-    for (const [i, call] of calls.entries()) {
-      // Only the last call brings the chat model back, so a turn with several
-      // calls does not load it between them.
-      const last = i === calls.length - 1;
-      const placeholder: MediaInfo = {
-        kind: call.function.name === "generate_video" ? "video" : "image",
-        status: "running",
-        prompt: "",
-        model: "",
-      };
-      messages = [
-        ...messages,
-        { role: "tool", tool_call_id: call.id, name: call.function.name, content: mediaResultText(placeholder), media: placeholder },
-      ];
-      if (!isMediaTool(call.function.name)) {
-        patchToolMessage(call.id, { ...placeholder, status: "error", error: `Unknown tool ${call.function.name}.` });
-        continue;
-      }
-      if (signal.aborted) {
-        patchToolMessage(call.id, { ...placeholder, status: "cancelled" });
-        continue;
-      }
-      const result = await runMediaTool(
-        call.id,
-        call.function.name,
-        call.function.arguments,
-        { ...ctx, reloadModel: last ? chatModel : undefined },
-        signal,
-        (m) => patchToolMessage(call.id, m)
-      );
-      // A picture's job reloads the chat model on the server; a video's cannot.
-      if (last && result.kind === "video" && result.status === "done") {
-        loadModel(chatModel).catch(() => {});
-      }
+    const hasVideo = calls.some((c) => c.function.name === "generate_video");
+    messages = [
+      ...messages,
+      ...calls.map((call): PlainMessage => {
+        const placeholder: MediaInfo = {
+          kind: call.function.name === "generate_video" ? "video" : "image",
+          status: "running",
+          prompt: "",
+          model: "",
+        };
+        return { role: "tool", tool_call_id: call.id, name: call.function.name, content: mediaResultText(placeholder), media: placeholder };
+      }),
+    ];
+    // Every image job carries the reload; the server does it after the last
+    // one to finish. With a video in the turn the browser reloads instead,
+    // after everything, since the server cannot see the video end.
+    const imageCtx = { ...ctx, reloadModel: hasVideo ? undefined : chatModel };
+    const results = await Promise.all(
+      calls.map((call) => {
+        if (!isMediaTool(call.function.name)) {
+          const failed: MediaInfo = { kind: "image", status: "error", prompt: "", model: "", error: `Unknown tool ${call.function.name}.` };
+          patchToolMessage(call.id, failed);
+          return failed;
+        }
+        return runMediaTool(call.id, call.function.name, call.function.arguments, imageCtx, signal, (m) =>
+          patchToolMessage(call.id, m)
+        );
+      })
+    );
+    if (hasVideo && results.some((r) => r.status === "done")) {
+      loadModel(chatModel).catch(() => {});
     }
   }
 
