@@ -85,6 +85,11 @@ func applyTimings(u *Usage, timings gjson.Result) {
 	if v := timings.Get("predicted_ms"); v.Exists() {
 		u.Tokens.PredictedMs = int(v.Float())
 	}
+	// terra fork (patch 29): Radiance reports how long a preempted request
+	// sat out of the batch inside its decode window.
+	if v := int(timings.Get("preempted_ms").Float()); v > 0 {
+		u.Tokens.PreemptedMs = v
+	}
 	if ms := int(timings.Get("prompt_ms").Float() + timings.Get("predicted_ms").Float()); ms > u.DurationMs {
 		u.DurationMs = ms
 	}

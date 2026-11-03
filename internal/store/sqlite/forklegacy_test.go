@@ -123,9 +123,6 @@ func TestForkLegacyMigrationsRenumbered(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			latest, count := latestMigration(t)
-			if name == "v262 terra 2026-11-10" && latest < 8 {
-				t.Skip("preempted_ms is migration 8, added by patch 29")
-			}
 			st, err := New(build(t), "")
 			if err != nil {
 				t.Fatalf("New on a legacy fork database: %v", err)
@@ -136,7 +133,7 @@ func TestForkLegacyMigrationsRenumbered(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, c := range []string{"src", "task", "route", "peer_id", "reasoning_tokens", "capture_id", "prompt_ms", "predicted_ms", "ts_end_ms"} {
+			for _, c := range []string{"src", "task", "route", "peer_id", "reasoning_tokens", "capture_id", "prompt_ms", "predicted_ms", "ts_end_ms", "preempted_ms"} {
 				if !cols[c] {
 					t.Errorf("activity is missing column %s after migration", c)
 				}
@@ -158,7 +155,7 @@ func TestForkLegacyMigrationsRenumbered(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(page.Data) != 1 || page.Data[0].Tokens.PredictedMs != 830 {
+			if len(page.Data) != 1 || page.Data[0].Tokens.PredictedMs != 830 || page.Data[0].Tokens.PreemptedMs != 0 {
 				t.Fatalf("legacy row = %+v", page.Data)
 			}
 			if _, err := st.Activity().Insert(ctx, store.ActivityLogEntry{Timestamp: time.UnixMilli(1_700_000_001_250), Model: "m"}); err != nil {

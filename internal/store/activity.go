@@ -30,6 +30,9 @@ type TokenMetrics struct {
 	TokensPerSecond float64 `json:"tokens_per_second"`
 	PromptMs        int     `json:"prompt_ms"`
 	PredictedMs     int     `json:"predicted_ms"`
+	// PreemptedMs is the part of PredictedMs the engine spent with the request
+	// preempted out of the batch (timings.preempted_ms); 0 when unreported.
+	PreemptedMs int `json:"preempted_ms"`
 }
 
 // ActivityLogEntry represents parsed token statistics from llama-server logs.
@@ -194,14 +197,17 @@ type PromptScatterPoint struct {
 // DecodeMs (llama-server's predicted_ms, -1 when unreported) place the decode
 // on the wall clock as [EndMs-DecodeMs, EndMs], so the UI can measure how
 // many decodes overlapped and what the system as a whole produced.
+// PreemptedMs (0 when unreported) is the part of DecodeMs spent preempted out
+// of the batch; the UI uses DecodeMs-PreemptedMs as the active decode time.
 type GenScatterPoint struct {
-	Context  int     `json:"context"`
-	Speed    float64 `json:"speed"`
-	Accept   float64 `json:"accept"`
-	Output   int     `json:"output"`
-	Session  string  `json:"session,omitempty"`
-	EndMs    int64   `json:"end_ms"`
-	DecodeMs int     `json:"decode_ms"`
+	Context     int     `json:"context"`
+	Speed       float64 `json:"speed"`
+	Accept      float64 `json:"accept"`
+	Output      int     `json:"output"`
+	Session     string  `json:"session,omitempty"`
+	EndMs       int64   `json:"end_ms"`
+	DecodeMs    int     `json:"decode_ms"`
+	PreemptedMs int     `json:"preempted_ms"`
 }
 
 // HistogramData is a binned distribution with percentile summaries.
