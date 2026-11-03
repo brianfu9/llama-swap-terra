@@ -67,7 +67,7 @@ export function summarizeActivity(rows: ActivityLogEntry[]): ActivitySummary {
   let promptSeconds = 0;
   let genTokens = 0;
   let genSeconds = 0;
-  const decodes: { endMs: number; decodeMs: number; output: number; speed: number }[] = [];
+  const decodes: { endMs: number; decodeMs: number; preemptedMs?: number; output: number; speed: number }[] = [];
   // The rows arrive in whatever order the table is sorted by, so the range is
   // tracked by parsed time rather than by taking the first and last row.
   let startedMs = Infinity;
@@ -110,6 +110,9 @@ export function summarizeActivity(rows: ActivityLogEntry[]): ActivitySummary {
       decodes.push({
         endMs: rowMs,
         decodeMs,
+        // Only meaningful against a real predicted_ms; the derived fallback
+        // above is already the speed's own (active) time.
+        preemptedMs: row.tokens.predicted_ms > 0 ? row.tokens.preempted_ms : undefined,
         output: row.tokens.output_tokens,
         speed: row.tokens.tokens_per_second,
       });

@@ -75,6 +75,8 @@ export interface TokenMetrics {
   tokens_per_second: number;
   prompt_ms: number;
   predicted_ms: number;
+  /** Part of predicted_ms spent preempted out of the batch; 0 when unreported. Absent from older servers. */
+  preempted_ms?: number;
 }
 
 export interface ActivityLogEntry {
@@ -226,6 +228,8 @@ export interface GenScatterPoint {
   end_ms?: number;
   /** llama-server predicted_ms; <= 0 when unreported. */
   decode_ms?: number;
+  /** Part of decode_ms spent preempted out of the batch; 0 or absent when unreported. */
+  preempted_ms?: number;
 }
 
 export interface ActivityStatsData {

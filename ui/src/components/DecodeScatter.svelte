@@ -29,9 +29,12 @@
 
   interface Props {
     points: GenScatterPoint[];
+    /** Chart title and y-axis label; the solo-equivalent view relabels both. */
+    title?: string;
+    yLabel?: string;
   }
 
-  let { points }: Props = $props();
+  let { points, title = "Decode Speed vs Context Length", yLabel = "Decode speed (tokens/sec)" }: Props = $props();
 
   let canvas: HTMLCanvasElement;
   let chart: Chart<"scatter">;
@@ -93,7 +96,7 @@
         legend: { display: false },
         title: {
           display: true,
-          text: "Decode Speed vs Context Length",
+          text: title,
           color: colors.legend,
           font: { size: 14, weight: "bold" as const },
         },
@@ -163,7 +166,7 @@
           beginAtZero: true,
           ticks: { color: colors.tick, font: { size: 10 } },
           grid: { color: colors.grid },
-          title: { display: true, text: "Decode speed (tokens/sec)", color: colors.tick },
+          title: { display: true, text: yLabel, color: colors.tick },
         },
       },
     };
