@@ -584,3 +584,56 @@ func TestStore_ListActivityKeepsMilliseconds(t *testing.T) {
 		t.Errorf("timestamp ms = %d, want 1700000000250", got)
 	}
 }
+
+// preempted_ms round-trips through Insert, List and the stats gen scatter, and
+// a row inserted without it reads back as 0.
+func TestStore_ActivityPreemptedMsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	st, err := New("")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer st.Close()
+
+	for i, preempted := range []int{0, 350} {
+		if _, err := st.Activity().Insert(ctx, store.ActivityLogEntry{
+			Timestamp: time.UnixMilli(int64(2000 + i*1000)),
+			Model:     "m",
+			Tokens: store.TokenMetrics{
+				InputTokens:     10 + i,
+				OutputTokens:    40,
+				TokensPerSecond: 40,
+				PredictedMs:     1000,
+				PreemptedMs:     preempted,
+			},
+		}); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+
+	page, err := st.Activity().List(ctx, store.ActivityQuery{Limit: 10, Page: 1, Sort: "id", Order: "asc"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(page.Data) != 2 || page.Data[0].Tokens.PreemptedMs != 0 || page.Data[1].Tokens.PreemptedMs != 350 {
+		t.Fatalf("listed preempted_ms = %+v", page.Data)
+	}
+	if page.Data[1].Tokens.PredictedMs != 1000 {
+		t.Fatalf("predicted_ms changed: %+v", page.Data[1].Tokens)
+	}
+
+	stats, err := st.Activity().Stats(ctx, store.ActivityStatsQuery{Model: "m"})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	byContext := map[int]store.GenScatterPoint{}
+	for _, g := range stats.GenScatter {
+		byContext[g.Context] = g
+	}
+	if g := byContext[11]; g.PreemptedMs != 350 || g.DecodeMs != 1000 {
+		t.Errorf("gen scatter[11] preempted/decode = %d/%d, want 350/1000", g.PreemptedMs, g.DecodeMs)
+	}
+	if g := byContext[10]; g.PreemptedMs != 0 {
+		t.Errorf("gen scatter[10] preempted = %d, want 0", g.PreemptedMs)
+	}
+}

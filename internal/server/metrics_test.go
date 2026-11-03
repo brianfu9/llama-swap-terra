@@ -105,6 +105,39 @@ func TestServer_ParseMetrics_Timings(t *testing.T) {
 	}
 }
 
+func TestServer_ParseMetrics_PreemptedMs(t *testing.T) {
+	cases := []struct {
+		name    string
+		timings string
+		want    int
+	}{
+		{"present", `{"predicted_ms":1250,"preempted_ms":300.6}`, 300},
+		{"absent", `{"predicted_ms":1250}`, 0},
+		{"negative", `{"predicted_ms":1250,"preempted_ms":-5}`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed := gjson.Parse(`{"timings":` + tc.timings + `}`)
+			entry, err := parseMetrics("m", time.Now(), parsed.Get("usage"), parsed.Get("timings"), parsed.Get("metrics"))
+			if err != nil {
+				t.Fatalf("parseMetrics: %v", err)
+			}
+			if entry.Tokens.PreemptedMs != tc.want || entry.Tokens.PredictedMs != 1250 {
+				t.Fatalf("preempted/predicted = %d/%d, want %d/1250", entry.Tokens.PreemptedMs, entry.Tokens.PredictedMs, tc.want)
+			}
+		})
+	}
+	// No timings at all (vLLM, TabbyAPI): nothing preempted.
+	parsed := gjson.Parse(`{"usage":{"prompt_tokens":1,"completion_tokens":2}}`)
+	entry, err := parseMetrics("m", time.Now(), parsed.Get("usage"), parsed.Get("timings"), parsed.Get("metrics"))
+	if err != nil {
+		t.Fatalf("parseMetrics: %v", err)
+	}
+	if entry.Tokens.PreemptedMs != 0 {
+		t.Fatalf("PreemptedMs without timings = %d, want 0", entry.Tokens.PreemptedMs)
+	}
+}
+
 func TestServer_ParseMetrics_TabbyAPI(t *testing.T) {
 	body := `{"id":"chatcmpl-131b9995cd0c40c99e2ce958083ee406","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":83,"prompt_time":2.36,"prompt_tokens_per_sec":35.17,"completion_tokens":192,"completion_time":11.22,"completion_tokens_per_sec":17.11,"total_tokens":275,"total_time":13.63},"model":"SC_6.00bpw_H6_V6"}`
 	parsed := gjson.Parse(body)

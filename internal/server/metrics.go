@@ -500,6 +500,7 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 	draftAccTokens := -1
 	promptMs := -1
 	predictedMs := -1
+	preemptedMs := 0
 
 	// TabbyAPI reports prompt/completion rates and total time inside its usage
 	// block. These are base values that llama-server timings and vLLM metrics
@@ -525,6 +526,12 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 		tokensPerSecond = timings.Get("predicted_per_second").Float()
 		promptMs = int(timings.Get("prompt_ms").Float())
 		predictedMs = int(timings.Get("predicted_ms").Float())
+		// Radiance reports how long a preempted request sat out of the batch
+		// inside its decode window. Absent (older engines, llama-server) or
+		// negative means none.
+		if v := int(timings.Get("preempted_ms").Float()); v > 0 {
+			preemptedMs = v
+		}
 		timingsDurationMs := int(timings.Get("prompt_ms").Float() + timings.Get("predicted_ms").Float())
 		if timingsDurationMs > durationMs {
 			durationMs = timingsDurationMs
@@ -573,6 +580,7 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 			TokensPerSecond: tokensPerSecond,
 			PromptMs:        promptMs,
 			PredictedMs:     predictedMs,
+			PreemptedMs:     preemptedMs,
 		},
 		DurationMs: durationMs,
 	}

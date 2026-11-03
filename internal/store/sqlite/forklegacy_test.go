@@ -71,7 +71,7 @@ func TestForkLegacyMigrationsRenumbered(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, c := range []string{"src", "prompt_ms", "predicted_ms", "ts_end_ms"} {
+			for _, c := range []string{"src", "prompt_ms", "predicted_ms", "ts_end_ms", "preempted_ms"} {
 				if !cols[c] {
 					t.Errorf("activity is missing column %s after migration", c)
 				}
@@ -81,8 +81,8 @@ func TestForkLegacyMigrationsRenumbered(t *testing.T) {
 				`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&maxV); err != nil {
 				t.Fatal(err)
 			}
-			if maxV != 5 {
-				t.Errorf("max applied version = %d, want 5", maxV)
+			if maxV != 6 {
+				t.Errorf("max applied version = %d, want 6", maxV)
 			}
 
 			// The old row survives with its timings, and the cache table works.
@@ -90,7 +90,7 @@ func TestForkLegacyMigrationsRenumbered(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(page.Data) != 1 || page.Data[0].Tokens.PredictedMs != 830 {
+			if len(page.Data) != 1 || page.Data[0].Tokens.PredictedMs != 830 || page.Data[0].Tokens.PreemptedMs != 0 {
 				t.Fatalf("legacy row = %+v", page.Data)
 			}
 			if _, err := st.Activity().Insert(ctx, store.ActivityLogEntry{Timestamp: time.UnixMilli(1_700_000_001_250), Model: "m"}); err != nil {
@@ -120,7 +120,7 @@ func TestForkLegacyMigrationsLeaveCurrentDB(t *testing.T) {
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM goose_db_version`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 6 {
-		t.Errorf("goose_db_version rows = %d, want 6 (versions 0-5, no duplicates)", rows)
+	if rows != 7 {
+		t.Errorf("goose_db_version rows = %d, want 7 (versions 0-6, no duplicates)", rows)
 	}
 }
