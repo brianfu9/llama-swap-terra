@@ -12,6 +12,22 @@
 // A request's tokens are spread evenly over its decode. That is a smoothing:
 // llama-server reports one predicted_ms per request, not a per-token trace.
 //
+// Preemption: an engine that preempts (Radiance) reports preempted_ms, the
+// part of predicted_ms the request spent out of the batch. Counting that time
+// as decoding inflates k past the slot count and deflates the request's speed,
+// so every placement here uses the ACTIVE decode time, predicted_ms minus
+// preempted_ms, and the active speed, output / active time. The active time is
+// still placed as one contiguous window [endMs - active, endMs]: the engine
+// reports only a total, not when the preempted stretches were, so this is an
+// approximation that puts all the active time at the end of the request.
+//
+// Solo-equivalent speed: what a request would have decoded at had it run
+// alone. Measured per-stream slowdown at k is soloPerStream / perStream(k) =
+// k / speedup(k); a request's solo-equivalent is its active speed times the
+// slowdown at its time-weighted mean k, interpolated linearly between whole
+// levels. It is NOT speed x k or the system rate, both of which count the
+// other streams' tokens as this request's.
+//
 // Prefill of one slot runs in the same batches as decode of another, so that
 // time lands inside the other request's decode interval. The per-stream rate
 // blames it on decode; the system rate counts it correctly, because tokens
@@ -23,6 +39,8 @@ export interface DecodeSample {
   endMs?: number;
   /** llama-server's predicted_ms. <= 0 means the request reported no timing. */
   decodeMs?: number;
+  /** Part of decodeMs spent preempted out of the batch; absent or <= 0 means none. */
+  preemptedMs?: number;
   output: number;
   /** Reported per-request decode rate, tokens/sec. */
   speed: number;
@@ -54,6 +72,12 @@ export interface ConcurrencyLevel {
   speedup: number;
   /** k x solo systemTps: what perfect linear scaling would give. */
   idealTps: number;
+  /**
+   * Per-stream slowdown vs solo, k / speedup: how much slower one stream
+   * decodes at this k than alone. 1 at k = 1. 0 when unreliable: no solo
+   * baseline, or this level or the solo level has under MIN_LEVEL_BUSY_MS.
+   */
+  slowdown: number;
 }
 
 /** One request placed by its time-weighted concurrency. */
@@ -62,7 +86,14 @@ export interface ConcurrencyPoint {
   meanK: number;
   /** meanK rounded to the nearest whole level, at least 1. */
   k: number;
+  /** Active decode speed: output / (decodeMs - preemptedMs). The reported speed when nothing was preempted. */
   speed: number;
+  /**
+   * Estimated tok/s had this request run alone: speed x slowdown(meanK),
+   * slowdown interpolated between whole levels. Equals speed when meanK <= 1,
+   * and when a level it needs is unreliable (see ConcurrencyLevel.slowdown).
+   */
+  soloEquiv: number;
 }
 
 export interface ConcurrencyData {
@@ -91,6 +122,11 @@ export interface ConcurrencyData {
    * the reported speed.
    */
   systemSpeeds: number[];
+  /**
+   * Per input sample, in input order: the request's solo-equivalent speed
+   * (ConcurrencyPoint.soloEquiv). NaN for a sample that could not be placed.
+   */
+  soloSpeeds: number[];
   timed: number;
   /** Requests dropped for having no decode timing or end time. */
   untimed: number;
@@ -109,9 +145,45 @@ const EMPTY: ConcurrencyData = {
   soloTps: 0,
   maxK: 0,
   systemSpeeds: [],
+  soloSpeeds: [],
   timed: 0,
   untimed: 0,
 };
+
+/**
+ * Busy time a level (and the solo baseline) needs before its slowdown is
+ * trusted. A level seen for a few seconds measures noise; requests that would
+ * need it keep their own speed rather than an extrapolated one.
+ */
+export const MIN_LEVEL_BUSY_MS = 60_000;
+
+/**
+ * Active decode time: decodeMs minus the preempted part. Falls back to decodeMs
+ * when preemptedMs is missing, not positive, or not smaller than decodeMs.
+ */
+export function activeDecodeMs(decodeMs: number, preemptedMs: number | undefined): number {
+  if (preemptedMs === undefined || !Number.isFinite(preemptedMs) || preemptedMs <= 0) return decodeMs;
+  const active = decodeMs - preemptedMs;
+  return active > 0 ? active : decodeMs;
+}
+
+/**
+ * Per-stream slowdown at a fractional mean k, linearly interpolated between
+ * the whole levels around it. 1 at k <= 1. NaN when a bracketing level has no
+ * trusted slowdown (see ConcurrencyLevel.slowdown), so callers keep the raw
+ * speed instead of extrapolating.
+ */
+export function slowdownAt(meanK: number, slowdownByK: Map<number, number>): number {
+  if (!(meanK > 1)) return 1;
+  const lo = Math.floor(meanK);
+  const hi = Math.ceil(meanK);
+  const sLo = lo <= 1 ? 1 : slowdownByK.get(lo);
+  if (sLo === undefined || !(sLo > 0)) return NaN;
+  if (hi === lo) return sLo;
+  const sHi = slowdownByK.get(hi);
+  if (sHi === undefined || !(sHi > 0)) return NaN;
+  return sLo + (meanK - lo) * (sHi - sLo);
+}
 
 function median(values: number[]): number {
   if (values.length === 0) return 0;
@@ -139,6 +211,7 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
   const spans: Span[] = [];
   let untimed = 0;
   const systemSpeeds = new Array<number>(samples.length).fill(NaN);
+  const soloSpeeds = new Array<number>(samples.length).fill(NaN);
   for (const [index, s] of samples.entries()) {
     if (!Number.isFinite(s.speed) || s.speed <= 0 || !(s.output > 0)) continue;
     const end = s.endMs;
@@ -149,18 +222,21 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
       untimed++;
       continue;
     }
+    const active = activeDecodeMs(ms, s.preemptedMs);
     spans.push({
-      start: end - ms,
+      start: end - active,
       end,
-      rate: s.output / ms,
+      rate: s.output / active,
       output: s.output,
-      speed: s.speed,
+      // Scale the reported speed rather than recompute output / active, so a
+      // request with nothing preempted keeps its reported figure exactly.
+      speed: s.speed * (ms / active),
       kMs: 0,
       sysTokens: 0,
       index,
     });
   }
-  if (spans.length === 0) return { ...EMPTY, systemSpeeds, untimed };
+  if (spans.length === 0) return { ...EMPTY, systemSpeeds, soloSpeeds, untimed };
 
   // Sweep the start/end edges. Every edge at one instant is applied before
   // the next segment opens, so a decode ending exactly when another starts
@@ -215,7 +291,7 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
     // rather than the reported speed, which can differ by rounding; keep the
     // reported figure there so solo points do not move when this mode is on.
     systemSpeeds[sp.index] = meanK <= 1 + 1e-9 ? sp.speed : (sp.sysTokens / dur) * 1000;
-    return { meanK, k: Math.max(1, Math.round(meanK)), speed: sp.speed };
+    return { meanK, k: Math.max(1, Math.round(meanK)), speed: sp.speed, soloEquiv: sp.speed };
   });
 
   const solo = busy.get(1);
@@ -231,11 +307,16 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
   }
 
   const levels: ConcurrencyLevel[] = [];
+  const slowdownByK = new Map<number, number>();
+  const soloTrusted = soloTps > 0 && (solo?.ms ?? 0) >= MIN_LEVEL_BUSY_MS;
   for (let k = 1; k <= maxK; k++) {
     const level = busy.get(k);
     if (!level || level.ms <= 0) continue;
     const systemTps = (level.tokens / level.ms) * 1000;
     const speeds = speedsByK.get(k) ?? [];
+    const speedup = soloTps > 0 ? systemTps / soloTps : 0;
+    const slowdown = soloTrusted && level.ms >= MIN_LEVEL_BUSY_MS && speedup > 0 ? k / speedup : 0;
+    if (slowdown > 0) slowdownByK.set(k, slowdown);
     levels.push({
       k,
       busyMs: level.ms,
@@ -244,10 +325,18 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
       systemTps,
       requests: speeds.length,
       perStreamMedian: median(speeds),
-      speedup: soloTps > 0 ? systemTps / soloTps : 0,
+      speedup,
       idealTps: k * soloTps,
+      slowdown,
     });
   }
+
+  // Solo-equivalent needs the levels, so it is a second pass over the points.
+  points.forEach((p, i) => {
+    const factor = soloTrusted ? slowdownAt(p.meanK, slowdownByK) : NaN;
+    if (Number.isFinite(factor)) p.soloEquiv = p.speed * factor;
+    soloSpeeds[spans[i].index] = p.soloEquiv;
+  });
 
   return {
     segments,
@@ -262,6 +351,7 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
     soloTps,
     maxK,
     systemSpeeds,
+    soloSpeeds,
     timed: spans.length,
     untimed,
   };

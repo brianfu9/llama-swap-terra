@@ -18,7 +18,11 @@
   // is perfect linear scaling from the solo rate. The gap between them is what
   // batching costs; a flat solid line means more agents gain nothing.
 
-  let { data }: { data: ConcurrencyData } = $props();
+  // solo: plot each request's solo-equivalent speed instead of its own, so
+  // the cells sit level with k = 1 when the slowdown explains the drop.
+  let { data, solo = false }: { data: ConcurrencyData; solo?: boolean } = $props();
+
+  const speedOf = (p: { speed: number; soloEquiv: number }) => (solo ? p.soloEquiv : p.speed);
 
   let canvas: HTMLCanvasElement;
   let chart: Chart<"scatter">;
@@ -34,13 +38,14 @@
     let lo = Infinity;
     let hi = -Infinity;
     for (const p of pts) {
-      if (p.speed < lo) lo = p.speed;
-      if (p.speed > hi) hi = p.speed;
+      const v = speedOf(p);
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
     }
     const step = (hi - lo) / Y_BINS;
     const counts = new Map<string, { k: number; iy: number; count: number }>();
     for (const p of pts) {
-      const iy = step > 0 ? Math.min(Y_BINS - 1, Math.floor((p.speed - lo) / step)) : 0;
+      const iy = step > 0 ? Math.min(Y_BINS - 1, Math.floor((speedOf(p) - lo) / step)) : 0;
       const key = `${p.k}:${iy}`;
       const c = counts.get(key) ?? { k: p.k, iy, count: 0 };
       c.count++;
@@ -69,7 +74,7 @@
    */
   let yMax = $derived.by(() => {
     let top = 0;
-    for (const p of data.points) top = Math.max(top, p.speed);
+    for (const p of data.points) top = Math.max(top, speedOf(p));
     for (const l of data.levels) top = Math.max(top, l.systemTps);
     return top > 0 ? Math.ceil((top * 1.12) / 20) * 20 : 20;
   });
@@ -135,6 +140,8 @@
               if (level) {
                 const lines = [`system: ${formatCompact(level.systemTps)} tok/s`];
                 if (level.speedup > 0) lines.push(`speedup vs solo: ${level.speedup.toFixed(2)}×`);
+                if (level.k > 1 && level.slowdown > 0)
+                  lines.push(`per-stream slowdown: ${level.slowdown.toFixed(2)}×`);
                 if (level.perStreamMedian > 0)
                   lines.push(`per-stream median: ${formatCompact(level.perStreamMedian)} tok/s`);
                 lines.push(
@@ -144,7 +151,7 @@
               }
               const cell = cellOf(item);
               if (cell) {
-                return `${formatCompact(cell.y0)}–${formatCompact(cell.y1)} tok/s per stream: ${cell.count} req`;
+                return `${formatCompact(cell.y0)}–${formatCompact(cell.y1)} tok/s ${solo ? "solo-equivalent" : "per stream"}: ${cell.count} req`;
               }
               return "";
             },
@@ -169,7 +176,11 @@
           type: "linear" as const,
           min: 0,
           max: yMax,
-          title: { display: true, text: "Decode speed (tokens/sec)", color: colors.tick },
+          title: {
+            display: true,
+            text: solo ? "Solo-equivalent decode (tokens/sec)" : "Decode speed (tokens/sec)",
+            color: colors.tick,
+          },
           ticks: { color: colors.tick, callback: (v: number | string) => formatCompact(Number(v)) },
           grid: { color: colors.grid },
         },
@@ -256,7 +267,7 @@
           <span class="inline-block size-2" style="background: {step}"></span>
         {/each}
         <span class="text-muted-foreground text-xs" title={`shade steps top out at: ${thresholds.join(", ")} requests`}>
-          {formatCompact(grid.maxCount)} req/cell (per stream)
+          {formatCompact(grid.maxCount)} req/cell ({solo ? "solo-equivalent" : "per stream"})
         </span>
       </span>
       <span class="flex items-center gap-1">

@@ -8,6 +8,7 @@
   import DecodeScatter from "./DecodeScatter.svelte";
   import ConcurrencyHeat from "./ConcurrencyHeat.svelte";
   import { buildConcurrency } from "../lib/concurrency";
+  import { buildHistogram } from "../lib/histogram";
   import { ChevronDown, X } from "@lucide/svelte";
   import * as Card from "$lib/components/ui/card/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -44,10 +45,36 @@
       (stats?.gen_scatter ?? []).map((p) => ({
         endMs: p.end_ms,
         decodeMs: p.decode_ms,
+        preemptedMs: p.preempted_ms,
         output: p.output,
         speed: p.speed,
       })),
     ),
+  );
+
+  // Which speed the decode charts plot. "solo" replaces each request's
+  // reported speed with its solo-equivalent (lib/concurrency soloSpeeds):
+  // its active speed times the measured per-stream slowdown at its
+  // concurrency. Requests with no decode timing keep their reported speed.
+  const decodeSpeedMode = persistentStore<"request" | "solo">("activity-decode-speed-mode", "request");
+  const SOLO_TITLE =
+    "Estimated tok/s had this request run alone: its speed x the measured per-stream slowdown at its concurrency.";
+  const genPoints = $derived.by(() => {
+    const points = stats?.gen_scatter ?? [];
+    if ($decodeSpeedMode !== "solo") return points;
+    return points.map((p, i) => {
+      const solo = concurrency.soloSpeeds[i];
+      return Number.isFinite(solo) ? { ...p, speed: solo } : p;
+    });
+  });
+  // The server's gen_histogram bins reported speeds, so the solo view bins in
+  // the browser. It covers the scatter's rows (those with a context), which
+  // can be a few fewer than the server histogram's.
+  const genHistogram = $derived(
+    $decodeSpeedMode === "solo" ? buildHistogram(genPoints.map((p) => p.speed)) : (stats?.gen_histogram ?? null),
+  );
+  const decodeYLabel = $derived(
+    $decodeSpeedMode === "solo" ? "Solo-equivalent decode (tokens/sec)" : "Decode speed (tokens/sec)",
   );
 </script>
 
@@ -108,17 +135,29 @@
         {/if}
       </div>
       <div class="w-full min-w-0 sm:w-1/2">
-        <div class="text-muted-foreground mb-1 text-sm font-medium">Token Generation</div>
-        {#if stats?.gen_scatter && stats.gen_scatter.length > 0}
-          <DecodeScatter points={stats.gen_scatter} />
-        {/if}
-        {#if stats?.gen_histogram}
-          <TokenHistogram
-            data={stats.gen_histogram}
-            unit="tokens/sec"
-            xLabel="Decode speed (tokens/sec)"
-            yLabel="Requests"
+        <div class="text-muted-foreground mb-1 flex items-center gap-2 text-sm font-medium">
+          Token Generation
+          <Button
+            variant="ghost"
+            size="xs"
+            class="text-muted-foreground font-normal"
+            onclick={() => ($decodeSpeedMode = $decodeSpeedMode === "solo" ? "request" : "solo")}
+            title={$decodeSpeedMode === "solo"
+              ? `Solo-equivalent: ${SOLO_TITLE} Click for per request.`
+              : "Per request: the request's own reported speed. Click for solo-equivalent."}
+          >
+            Speed: {$decodeSpeedMode === "solo" ? "solo-equivalent" : "per request"}
+          </Button>
+        </div>
+        {#if genPoints.length > 0}
+          <DecodeScatter
+            points={genPoints}
+            title={$decodeSpeedMode === "solo" ? "Solo-Equivalent Decode vs Context Length" : undefined}
+            yLabel={decodeYLabel}
           />
+        {/if}
+        {#if genHistogram}
+          <TokenHistogram data={genHistogram} unit="tokens/sec" xLabel={decodeYLabel} yLabel="Requests" />
         {:else}
           <div class="text-muted-foreground py-6 text-center text-sm">No generation speed data yet</div>
         {/if}
@@ -148,7 +187,7 @@
         </div>
         {#if concurrency.maxK > 1}
           <div class="w-full min-w-0 sm:w-1/2">
-            <ConcurrencyHeat data={concurrency} />
+            <ConcurrencyHeat data={concurrency} solo={$decodeSpeedMode === "solo"} />
           </div>
         {:else}
           <div class="text-muted-foreground py-2 text-sm">
