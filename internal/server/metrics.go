@@ -351,9 +351,22 @@ func (mp *metricsMonitor) record(modelID string, task hint.Task, r *http.Request
 		return
 	}
 
+	// A response that started and then lost its client before the final usage
+	// chunk carries no token counts. Mark it so the activity log shows an
+	// abort, not a request that ran for minutes at 0 t/s. The client's own
+	// context, as in MarkClientClosed: a request cancelled from the UI still
+	// has a live client.
+	clientGone := swaputil.ClientContext(r.Context()).Err() != nil
+	markAborted := func() {
+		if clientGone && tm.Tokens.InputTokens <= 0 && tm.Tokens.OutputTokens <= 0 {
+			tm.ErrorMsg = "client disconnected mid-response"
+		}
+	}
+
 	body := recorder.body.Bytes()
 	if len(body) == 0 {
 		mp.logger.Warn("metrics: empty body, recording minimal metrics")
+		markAborted()
 		queueAndEmit()
 		return
 	}
@@ -375,6 +388,7 @@ func (mp *metricsMonitor) record(modelID string, task hint.Task, r *http.Request
 		tm.Tokens = u.Tokens
 		tm.DurationMs = u.DurationMs
 	}
+	markAborted()
 
 	tm.CaptureID = mp.newCaptureID(tm.Timestamp)
 	stored, ok := mp.queueMetrics(tm)

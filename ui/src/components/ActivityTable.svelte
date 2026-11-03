@@ -378,6 +378,11 @@
     }
   }
 
+  /** The client hung up before the usage chunk: no token counts, so no speed either. */
+  function isAborted(row: ActivityLogEntry): boolean {
+    return row.error_msg?.startsWith("client disconnected") ?? false;
+  }
+
   function buildColumns(withModel: boolean, withSource: boolean): ColumnDef<ActivityLogEntry>[] {
     const cols: ColumnDef<ActivityLogEntry>[] = [
       {
@@ -430,7 +435,10 @@
         id: "resp_status_code",
         accessorKey: "resp_status_code",
         header: "Status",
-        cell: ({ row }) => String(row.original.resp_status_code || "-"),
+        cell: ({ row }) =>
+          isAborted(row.original)
+            ? `${row.original.resp_status_code} aborted`
+            : String(row.original.resp_status_code || "-"),
       },
       {
         id: "resp_content_type",
@@ -470,13 +478,13 @@
         id: "prompt_speed",
         accessorFn: (row) => row.tokens.prompt_per_second,
         header: "Prefill",
-        cell: ({ row }) => formatSpeed(row.original.tokens.prompt_per_second),
+        cell: ({ row }) => (isAborted(row.original) ? "-" : formatSpeed(row.original.tokens.prompt_per_second)),
       },
       {
         id: "gen_speed",
         accessorFn: (row) => row.tokens.tokens_per_second,
         header: "Decode",
-        cell: ({ row }) => formatSpeed(row.original.tokens.tokens_per_second),
+        cell: ({ row }) => (isAborted(row.original) ? "-" : formatSpeed(row.original.tokens.tokens_per_second)),
       },
       {
         id: "prompt_duration",
