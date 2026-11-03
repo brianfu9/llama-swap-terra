@@ -497,6 +497,14 @@ models:
       # - protected params like "model" cannot be overridden
       # - values can be strings, numbers, booleans, arrays, or objects
       # - model aliases will be automatically created for each key
+      # priorityHeader: a request header whose integer value becomes the body's
+      # "priority" when the request does not set one
+      # - optional, default: "" (off)
+      # - for engines that queue by priority (vLLM, Radiance); higher runs first in Radiance
+      # - lets a client that can add headers but not body fields pick its place in the queue
+      # - a non-integer value is refused with 400
+      priorityHeader: X-Priority
+
       setParamsByID:
         "${MODEL_ID}":
           chat_template_kwargs:

@@ -264,3 +264,44 @@ func TestServer_FormFilterMiddleware(t *testing.T) {
 		t.Errorf("request context = %+v, want original whisper model", gotContext)
 	}
 }
+
+func TestServer_ApplyPriorityHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name, header, body, want string
+		wantErr                  bool
+	}{
+		{name: "header sets priority", header: "10", body: `{"model":"m"}`, want: "10"},
+		{name: "body priority wins", header: "10", body: `{"model":"m","priority":3}`, want: "3"},
+		{name: "no header", body: `{"model":"m"}`, want: ""},
+		{name: "negative", header: "-2", body: `{"model":"m"}`, want: "-2"},
+		{name: "not an integer", header: "high", body: `{"model":"m"}`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if tc.header != "" {
+				r.Header.Set("X-Priority", tc.header)
+			}
+			got, err := applyPriorityHeader([]byte(tc.body), r, "X-Priority")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want an error, got body %s", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p := gjson.GetBytes(got, "priority").Raw; p != tc.want {
+				t.Errorf("priority = %q, want %q", p, tc.want)
+			}
+		})
+	}
+
+	// Off: the header is ignored.
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Priority", "10")
+	got, err := applyPriorityHeader([]byte(`{"model":"m"}`), r, "")
+	if err != nil || gjson.GetBytes(got, "priority").Exists() {
+		t.Errorf("with no header configured, body = %s, err = %v", got, err)
+	}
+}

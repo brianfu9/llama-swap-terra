@@ -57,6 +57,10 @@ func CreateFilterMiddleware(cfg config.Config) chain.Middleware {
 				swaputil.SendResponse(w, r, http.StatusInternalServerError, err.Error())
 				return
 			}
+			if body, err = applyPriorityHeader(body, r, filters.PriorityHeader); err != nil {
+				swaputil.SendResponse(w, r, http.StatusBadRequest, err.Error())
+				return
+			}
 
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			r.Header.Del("Transfer-Encoding")
@@ -109,6 +113,29 @@ func CreateFormFilterMiddleware(cfg config.Config) chain.Middleware {
 			next.ServeHTTP(w, updated)
 		})
 	}
+}
+
+// applyPriorityHeader copies the integer in header name into the body's
+// "priority" when the body does not carry one, and records the request's
+// priority in its activity metadata. A non-integer header is refused rather
+// than silently queued at the default.
+func applyPriorityHeader(body []byte, r *http.Request, name string) ([]byte, error) {
+	if name == "" {
+		return body, nil
+	}
+	if v := strings.TrimSpace(r.Header.Get(name)); v != "" && !gjson.GetBytes(body, "priority").Exists() {
+		p, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("header %s: priority must be an integer, got %q", name, v)
+		}
+		if body, err = sjson.SetBytes(body, "priority", p); err != nil {
+			return nil, fmt.Errorf("error setting priority in request: %w", err)
+		}
+	}
+	if p := gjson.GetBytes(body, "priority"); p.Exists() {
+		_ = swaputil.SetReqData(r.Context(), "priority", p.Raw)
+	}
+	return body, nil
 }
 
 // resolveFilters returns the filter settings for a requested model. UseModelName

@@ -29,6 +29,12 @@ type Filters struct {
 	// Keys ending in "?" are set-if-undefined, as in SetParams.
 	// Protected params (like "model") cannot be set.
 	SetParamsByID map[string]map[string]any `yaml:"setParamsByID"`
+
+	// PriorityHeader names a request header whose integer value becomes the
+	// body's "priority" when the request does not set one, for an engine that
+	// queues by it (vLLM, Radiance). Lets a client that can add headers but not
+	// body fields (opencode's provider headers) ask for its place in the queue.
+	PriorityHeader string `yaml:"priorityHeader"`
 }
 
 // SanitizedStripParams returns a sorted list of parameters to strip,
