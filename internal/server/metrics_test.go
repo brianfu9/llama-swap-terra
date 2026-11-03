@@ -406,6 +406,51 @@ func TestMetricsMonitor_RecordClientClosed(t *testing.T) {
 	}
 }
 
+// TestMetricsMonitor_RecordClientGoneMidStream: a stream whose client left
+// before the usage chunk is marked as aborted. The same stream with a live
+// client, or a client that left after the usage chunk, is not.
+func TestMetricsMonitor_RecordClientGoneMidStream(t *testing.T) {
+	partial := "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"
+	full := partial + "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n"
+	for _, tc := range []struct {
+		name, body string
+		gone       bool
+		want       string
+	}{
+		{"gone before usage", partial, true, "client disconnected mid-response"},
+		{"live client", partial, false, ""},
+		{"gone after usage", full, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mm := newTestMetricsMonitor(t, logmon.NewWriter(io.Discard), 10, 5)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+			r = swaputil.WithClientContext(r)
+			if tc.gone {
+				cancel()
+			}
+			copier := newBodyCopier(httptest.NewRecorder())
+			copier.Header().Set("Content-Type", "text/event-stream")
+			copier.WriteHeader(http.StatusOK)
+			copier.Write([]byte(tc.body))
+
+			mm.record("m", r, copier, 0, nil, nil)
+
+			entries := metricsEntries(t, mm)
+			if len(entries) != 1 {
+				t.Fatalf("want 1 entry, got %d", len(entries))
+			}
+			if entries[0].RespStatusCode != http.StatusOK {
+				t.Errorf("status = %d, want 200", entries[0].RespStatusCode)
+			}
+			if entries[0].ErrorMsg != tc.want {
+				t.Errorf("error_msg = %q, want %q", entries[0].ErrorMsg, tc.want)
+			}
+		})
+	}
+}
+
 // TestServer_MetricsMiddleware_ClientClosed checks the middleware derives the
 // sentinel for a handler that returns without writing, and that the marker
 // propagates outward to the access-log recorder so both agree.
