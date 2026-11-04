@@ -11,6 +11,7 @@
   } from "../lib/activityFilters";
   import ActivityStats from "../components/ActivityStats.svelte";
   import ActivityTable from "../components/ActivityTable.svelte";
+  import QueuePanel from "../components/QueuePanel.svelte";
 
   const storedPageSize = persistentStore<number>("activity-page-size", 25);
   const storedFilters = persistentStore<ActivityFilters>(
@@ -137,9 +138,14 @@
     <ActivityStats {stats} {statsModel} onStatsModelChange={setStatsModel} />
   </div>
 
+  <div class="mb-4">
+    <QueuePanel inflightRequests={$inflightRequestEntries} storagePrefix="activity" />
+  </div>
+
   <ActivityTable
     metrics={rows}
     inflightRequests={$inflightRequestEntries}
+    showInflight={false}
     storagePrefix="activity"
     showModelColumn={true}
     showPagination={true}

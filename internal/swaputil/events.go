@@ -13,6 +13,9 @@ const ProcessLoadingEventID = 0x0A
 const InferencePausedEventID = 0x0B
 const UpstreamDetectedEventID = 0x0C
 
+// terra fork: fork event IDs start at 0x40 so upstream additions do not collide.
+const QueueStatsEventID = 0x40
+
 // ProcessStateChangeEvent is emitted whenever a process transitions between
 // lifecycle states. States are carried as strings so this package stays a leaf
 // (no import of internal/process).

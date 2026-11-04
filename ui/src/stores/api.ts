@@ -8,6 +8,8 @@ import type {
   ReqRespCapture,
   InFlightStats,
   InflightRequestEntry,
+  QueueSnapshot,
+  QueueStatsEvent,
   PerformanceResponse,
   UIConfig,
   Profile,
@@ -42,6 +44,7 @@ export const hasListedModels = derived(playgroundModels, ($playgroundModels) => 
 export const activityRevision = writable<number>(0);
 export const inFlightRequests = writable<number>(0);
 export const inflightRequestEntries = writable<InflightRequestEntry[]>([]);
+export const queueSnapshots = writable<QueueSnapshot[]>([]);
 const defaultUIConfig = (): UIConfig => ({
   activity: { session_id: ["X-Session-ID", "X-Litellm-Session-Id"] },
   helpagent: { disable: false },
@@ -73,6 +76,7 @@ export function enableAPIEvents(enabled: boolean): void {
     activityRevision.set(0);
     inFlightRequests.set(0);
     inflightRequestEntries.set([]);
+    queueSnapshots.set([]);
     uiConfig.set(defaultUIConfig());
     playgroundModelsRequest++;
     playgroundModelsRefreshQueued = false;
@@ -99,6 +103,7 @@ export function enableAPIEvents(enabled: boolean): void {
       activityRevision.update((n) => n + 1);
       inFlightRequests.set(0);
       inflightRequestEntries.set([]);
+      queueSnapshots.set([]);
       uiConfig.set(defaultUIConfig());
       models.set([]);
       playgroundModelsRequest++;
@@ -188,6 +193,13 @@ export function handleAPIEventMessage(data: string): void {
         inFlightRequests.set(requests.length);
         return requests;
       });
+      break;
+    }
+
+    case "queue": {
+      const receivedAt = performance.now();
+      const event = JSON.parse(message.data) as QueueStatsEvent;
+      queueSnapshots.set((event.snapshots ?? []).map((s) => ({ ...s, client_received_at_ms: receivedAt })));
       break;
     }
 

@@ -537,6 +537,7 @@ const (
 	msgTypeUIConfig    messageType = "uiConfig"
 	msgTypeProfile     messageType = "profileChanged"
 	msgTypePause       messageType = "pauseChanged"
+	msgTypeQueue       messageType = "queue"
 )
 
 // sendDropReportInterval is how often an SSE handler reports messages that
@@ -628,8 +629,8 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request, name string, s
 }
 
 // handleAPIEvents streams server events (model status, activity, in-flight
-// requests, UI config, profile and pause changes) to the client as Server-Sent
-// Events. Log data has its own stream, handleAPILogEvents.
+// requests, upstream queue snapshots, UI config, profile and pause changes) to the client as
+// Server-Sent Events. Log data has its own stream, handleAPILogEvents.
 func (s *Server) handleAPIEvents(w http.ResponseWriter, r *http.Request) {
 	s.serveSSE(w, r, "handleAPIEvents", func(send func(messageEnvelope)) func() {
 		sendModels := func() {
@@ -671,6 +672,14 @@ func (s *Server) handleAPIEvents(w http.ResponseWriter, r *http.Request) {
 				send(messageEnvelope{Type: msgTypePause, Data: string(j)})
 			}
 		}
+		sendQueue := func(e QueueStatsEvent) {
+			if e.Snapshots == nil {
+				e.Snapshots = []QueueSnapshot{}
+			}
+			if j, err := json.Marshal(e); err == nil {
+				send(messageEnvelope{Type: msgTypeQueue, Data: string(j)})
+			}
+		}
 
 		unsubscribe := []context.CancelFunc{
 			event.On(func(e swaputil.ProcessStateChangeEvent) { sendModels() }),
@@ -684,6 +693,7 @@ func (s *Server) handleAPIEvents(w http.ResponseWriter, r *http.Request) {
 			event.On(func(e ActivityLogEvent) { sendActivity(e.Metrics.ID) }),
 			event.On(func(e swaputil.InFlightRequestsEvent) { sendInFlight(e) }),
 			event.On(func(e swaputil.InferencePausedEvent) { sendPause() }),
+			event.On(func(e QueueStatsEvent) { sendQueue(e) }),
 		}
 
 		// initial payload
@@ -692,6 +702,7 @@ func (s *Server) handleAPIEvents(w http.ResponseWriter, r *http.Request) {
 		sendProfile()
 		sendPause()
 		sendInFlight(s.inflight.Current())
+		sendQueue(s.queue.current())
 
 		return func() { cancelAll(unsubscribe) }
 	})

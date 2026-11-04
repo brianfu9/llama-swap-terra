@@ -154,6 +154,54 @@ export interface InFlightStats {
   id?: string;
 }
 
+// An upstream scheduler's snapshot (Radiance /stats via queuepoll.go).
+export interface QueueRequest {
+  id: number;
+  tag?: string;
+  state: "waiting" | "prefill" | "decode" | "preempted" | "done";
+  prompt: number;
+  computed: number;
+  cached: number;
+  output: number;
+  max: number;
+  kv_tokens: number;
+  age_s: number;
+  ttft_s?: number;
+  tps: number;
+  priority: number;
+  queue_pos?: number;
+  wait?: "queued" | "kv_hold" | "kv_room" | "behind" | "media";
+  held_s?: number;
+  admit_tokens?: number;
+}
+
+export interface QueuePolicy {
+  kv_reserve: number;
+  backfill_ms: number;
+  aging_s: number;
+}
+
+export interface QueueSnapshot {
+  model: string;
+  at_ms: number;
+  kv_tokens_total: number;
+  kv_tokens_used: number;
+  kv_tokens_cached: number;
+  running: number;
+  waiting: number;
+  decode_tps: number;
+  prefill_tps: number;
+  preemptions: number;
+  queue?: QueuePolicy;
+  requests: QueueRequest[];
+  // performance.now() when the browser received it, to tick ages between polls
+  client_received_at_ms?: number;
+}
+
+export interface QueueStatsEvent {
+  snapshots: QueueSnapshot[];
+}
+
 export interface UIConfig {
   activity: {
     session_id: string[];
@@ -205,7 +253,7 @@ export interface PerformanceResponse {
 }
 
 export interface APIEventEnvelope {
-  type: "modelStatus" | "logData" | "activity" | "inflight" | "uiConfig" | "profileChanged" | "pauseChanged" | "perfsys" | "perfgpu";
+  type: "modelStatus" | "logData" | "activity" | "inflight" | "uiConfig" | "profileChanged" | "pauseChanged" | "perfsys" | "perfgpu" | "queue";
   data: string;
 }
 
