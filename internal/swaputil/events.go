@@ -10,6 +10,7 @@ const InFlightRequestsEventID = 0x07
 const ProfileChangedEventID = 0x08
 const ModelCapabilitiesChangedEventID = 0x09
 const ProcessLoadingEventID = 0x0A
+const QueueStatsEventID = 0x0B
 
 // ProcessStateChangeEvent is emitted whenever a process transitions between
 // lifecycle states. States are carried as strings so this package stays a leaf

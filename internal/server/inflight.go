@@ -406,6 +406,9 @@ func CreateInflightMiddleware(t *inflightTracker, cfg config.Config) chain.Middl
 			r = r.WithContext(ctx)
 			id := t.Add(r, cancel)
 			defer t.Remove(id)
+			// Upstream echoes it in its scheduler snapshot (queuepoll.go). Set after
+			// Add so the in-flight entry keeps the client's own headers.
+			r.Header.Set(requestTagHeader, id)
 
 			next.ServeHTTP(&inflightResponseWriter{ResponseWriter: w, tracker: t, id: id}, r)
 		})

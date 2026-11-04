@@ -36,6 +36,8 @@ type Server struct {
 
 	perf     *perf.Monitor
 	inflight *inflightTracker
+	// queue holds the latest upstream scheduler snapshots (queuepoll.go).
+	queue queueState
 	metrics  *metricsMonitor
 	store    store.Store
 	build    BuildInfo
@@ -285,6 +287,7 @@ func New(cfg config.Config, logs *logmon.Group, perfMon *perf.Monitor, st store.
 	s.routes()
 	s.startPreload()
 	go s.runSlotPoller()
+	go s.runQueuePoller()
 	return s, nil
 }
 
