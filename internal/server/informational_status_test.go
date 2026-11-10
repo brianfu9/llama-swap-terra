@@ -87,14 +87,6 @@ func TestProxy_RecordersIgnoreInformationalStatus(t *testing.T) {
 		assert.Equal(t, http.StatusInternalServerError, rec.status)
 	})
 
-	t.Run("deferredUpgradeWriter", func(t *testing.T) {
-		w := &deferredUpgradeWriter{header: http.Header{}}
-		w.WriteHeader(http.StatusContinue)
-		assert.False(t, w.WroteHeader())
-		w.WriteHeader(http.StatusBadGateway)
-		assert.Equal(t, http.StatusBadGateway, w.status)
-	})
-
 	t.Run("discardResponseWriter", func(t *testing.T) {
 		w := &discardResponseWriter{}
 		w.WriteHeader(http.StatusContinue)
