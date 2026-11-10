@@ -710,7 +710,7 @@
       >
         <Columns3 class="size-4" />
       </DropdownMenu.Trigger>
-      <DropdownMenu.Content align="end" class="min-w-[18rem] max-h-[60vh] overflow-y-auto p-0">
+      <DropdownMenu.Content align="end" class="min-w-[18rem] max-h-[50vh] overflow-y-auto p-0">
         <DropdownMenu.Label class="text-muted-foreground border-b px-3 py-2 text-xs font-medium uppercase tracking-wider">
           Columns <span class="text-[10px] normal-case tracking-normal">(drag to reorder)</span>
         </DropdownMenu.Label>
@@ -876,7 +876,7 @@
         >
           <Columns3 class="size-4" />
         </DropdownMenu.Trigger>
-        <DropdownMenu.Content align="end" class="min-w-[18rem] max-h-[60vh] overflow-y-auto p-0">
+        <DropdownMenu.Content align="end" class="min-w-[18rem] max-h-[50vh] overflow-y-auto p-0">
           <DropdownMenu.Label class="text-muted-foreground border-b px-3 py-2 text-xs font-medium uppercase tracking-wider">
             Columns <span class="text-[10px] normal-case tracking-normal">(drag to reorder)</span>
           </DropdownMenu.Label>

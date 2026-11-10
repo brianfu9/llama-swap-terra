@@ -783,7 +783,7 @@
          width as the composer below it, so lines stay readable on a wide
          desktop and take the full width of a phone. -->
     <div
-      class="mb-3 flex-1 overflow-y-auto px-1 sm:px-2"
+      class="mb-3 flex-1 overflow-x-hidden overflow-y-auto px-1 sm:px-2"
       bind:this={messagesContainer}
       onscroll={handleMessagesScroll}
     >
