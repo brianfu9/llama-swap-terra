@@ -36,11 +36,8 @@ type Server struct {
 
 	perf     *perf.Monitor
 	inflight *inflightTracker
-	// selectorIntents tracks open requests that name a warm selector target
-	// (terra fork patch 34, selector_intent.go). Built in routes().
-	selectorIntents *selectorIntents
 	// queue holds the latest upstream scheduler snapshots (queuepoll.go).
-	queue    queueState
+	queue queueState
 	metrics  *metricsMonitor
 	store    store.Store
 	build    BuildInfo
@@ -336,7 +333,6 @@ func stripAudioAPIPrefix(r *http.Request) {
 // routes builds the mux, registers every route, and wraps the mux with the
 // global CORS middleware.
 func (s *Server) routes() {
-	s.selectorIntents = newSelectorIntents(s.cfg)
 
 	authMW := CreateAuthMiddleware(s.cfg)
 	modelMWs := []chain.Middleware{authMW, createContentTypeMiddleware()}
@@ -413,7 +409,6 @@ func (s *Server) routes() {
 	// produce token usage/timings.
 	upstreamChain := apiChain.Append(
 		CreateProfileMiddleware(s),
-		CreateUpstreamSelectorIntentMiddleware(s),
 		CreateUpstreamInflightMiddleware(s.inflight, s.cfg),
 		CreateMetricsMiddleware(s.metrics, s.cfg),
 	)

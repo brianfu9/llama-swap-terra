@@ -96,7 +96,7 @@ func TestServer_SelectorStrategyWarm(t *testing.T) {
 	target, err := strategyWarm(cfg, selector, map[string]process.ProcessState{
 		"a": process.StateStarting,
 		"c": process.StateReady,
-	}, nil)
+	})
 	require.NoError(t, err)
 	assert.Equal(t, "c", target)
 
@@ -104,18 +104,18 @@ func TestServer_SelectorStrategyWarm(t *testing.T) {
 		"a": process.StateStarting,
 		"b": process.StateReady,
 		"c": process.StateReady,
-	}, nil)
+	})
 	require.NoError(t, err)
 	assert.Equal(t, "b", target)
 
 	target, err = strategyWarm(cfg, selector, map[string]process.ProcessState{
 		"a": process.StateStarting,
 		"b": process.StateStarting,
-	}, nil)
+	})
 	require.NoError(t, err)
 	assert.Equal(t, "a", target)
 
-	target, err = strategyWarm(cfg, selector, nil, nil)
+	target, err = strategyWarm(cfg, selector, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "a", target)
 }
@@ -460,61 +460,4 @@ func TestServer_Selector_ModelListingPinUsesFirstTarget(t *testing.T) {
 		}
 	}
 	t.Fatal("public selector missing from model listing")
-}
-
-// terra fork patch 34: an open request that names a warm target directly
-// wins over the ready target, so a mode switch is not undone by selector
-// requests that arrive while it loads.
-func TestServer_SelectorStrategyWarmFollowsSwitch(t *testing.T) {
-	cfg := config.Config{
-		Models: map[string]config.ModelConfig{"a": {}, "b": {}, "c": {}},
-		Selectors: map[string]config.SelectorConfig{
-			"warm": {Strategy: config.SelectorStrategyWarm, Targets: []string{"a", "b", "c"}},
-		},
-	}
-	selector := cfg.Selectors["warm"]
-	intents := newSelectorIntents(cfg)
-	running := map[string]process.ProcessState{"a": process.StateReady}
-
-	// No switch: the ready target wins.
-	target, err := strategyWarm(cfg, selector, running, intents)
-	require.NoError(t, err)
-	assert.Equal(t, "a", target)
-
-	// A request for b is open while a is still ready (b queued behind the swap).
-	endB := intents.begin(cfg, "b")
-	target, err = strategyWarm(cfg, selector, running, intents)
-	require.NoError(t, err)
-	assert.Equal(t, "b", target)
-
-	// The swap gap: a stopping, b not yet starting.
-	target, err = strategyWarm(cfg, selector, map[string]process.ProcessState{"a": process.StateStopping}, intents)
-	require.NoError(t, err)
-	assert.Equal(t, "b", target)
-
-	// The newest open switch wins.
-	endC := intents.begin(cfg, "c")
-	target, err = strategyWarm(cfg, selector, running, intents)
-	require.NoError(t, err)
-	assert.Equal(t, "c", target)
-	endC()
-	endC() // idempotent
-	target, err = strategyWarm(cfg, selector, running, intents)
-	require.NoError(t, err)
-	assert.Equal(t, "b", target)
-
-	// The switch request ends: back to the state-based choice.
-	endB()
-	target, err = strategyWarm(cfg, selector, map[string]process.ProcessState{"b": process.StateReady}, intents)
-	require.NoError(t, err)
-	assert.Equal(t, "b", target)
-	target, err = strategyWarm(cfg, selector, running, intents)
-	require.NoError(t, err)
-	assert.Equal(t, "a", target)
-
-	// Models that are not warm targets record nothing.
-	intents.begin(cfg, "unknown")
-	target, err = strategyWarm(cfg, selector, running, intents)
-	require.NoError(t, err)
-	assert.Equal(t, "a", target)
 }

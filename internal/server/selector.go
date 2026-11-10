@@ -105,8 +105,6 @@ func CreateSelectorMiddleware(s *Server) chain.Middleware {
 			}
 			selector, found := s.cfg.Selectors[model]
 			if !found {
-				// A request that names a warm selector target is a mode switch.
-				defer s.selectorIntents.begin(s.cfg, model)()
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -116,7 +114,7 @@ func CreateSelectorMiddleware(s *Server) chain.Middleware {
 			case config.SelectorStrategyPin:
 				target, err = strategyPin(selector)
 			case config.SelectorStrategyWarm:
-				target, err = strategyWarm(s.cfg, selector, s.local.RunningModels(), s.selectorIntents)
+				target, err = strategyWarm(s.cfg, selector, s.local.RunningModels())
 			case config.SelectorStrategySpillover:
 				target, err = strategySpillover(model, spillovers, s.local.RunningModels())
 			default:
@@ -160,15 +158,9 @@ func strategyPin(selector config.SelectorConfig) (string, error) {
 	return selector.Targets[0], nil
 }
 
-func strategyWarm(cfg config.Config, selector config.SelectorConfig, running map[string]process.ProcessState, intents *selectorIntents) (string, error) {
+func strategyWarm(cfg config.Config, selector config.SelectorConfig, running map[string]process.ProcessState) (string, error) {
 	if len(selector.Targets) == 0 {
 		return "", fmt.Errorf("selector has no targets")
-	}
-
-	// terra fork (patch 34): an open request for one target by name is a
-	// switch in progress; follow it (selector_intent.go).
-	if target, ok := intents.preferred(cfg, selector); ok {
-		return target, nil
 	}
 
 	for _, target := range selector.Targets {
