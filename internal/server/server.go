@@ -365,7 +365,12 @@ func (s *Server) routes() {
 		mux.Handle("POST "+path, modelChain.Then(dispatch))
 	}
 	for _, path := range modelGetRoutes {
-		mux.Handle("GET "+path, modelChain.Then(dispatch))
+		h := modelChain.Then(dispatch)
+		if path == "/props" {
+			// autoload=false must not start the model; see props.go.
+			h = modelChain.ThenFunc(s.handleProps)
+		}
+		mux.Handle("GET "+path, h)
 	}
 	for _, path := range modelDeleteRoutes {
 		mux.Handle("DELETE "+path, modelChain.Then(dispatch))
