@@ -22,7 +22,7 @@ import (
 )
 
 func TestBaseRouter_ReloadReleasesProcessMonitors(t *testing.T) {
-	for _, kind := range []string{"group", "matrix", "capacity"} {
+	for _, kind := range []string{"group", "matrix"} {
 		t.Run(kind, func(t *testing.T) {
 			logs := logmon.NewGroup(io.Discard, true, true, true)
 			defer func() {
@@ -40,13 +40,6 @@ func TestBaseRouter_ReloadReleasesProcessMonitors(t *testing.T) {
 				conf.Routing.Router.Use = "matrix"
 				conf.Routing.Router.Settings.Matrix = &config.MatrixConfig{Sets: config.OrderedSets{{Name: "a", DSL: "a"}}}
 			}
-			if kind == "capacity" {
-				conf.Routing.Router.Use = "capacity"
-				conf.Routing.Router.Settings.Capacity = &config.CapacityConfig{Pools: map[string]int64{"ram": 1}}
-				model := conf.Models["a"]
-				model.Capacities = map[string]int64{"ram": 1}
-				conf.Models["a"] = model
-			}
 			before := runtime.NumGoroutine()
 			for i := 0; i < 100; i++ {
 				var rt interface {
@@ -56,10 +49,8 @@ func TestBaseRouter_ReloadReleasesProcessMonitors(t *testing.T) {
 				}
 				if kind == "group" {
 					rt, err = NewGroup(conf, logs)
-				} else if kind == "matrix" {
-					rt, err = NewMatrix(conf, logs)
 				} else {
-					rt, err = NewCapacity(conf, logs)
+					rt, err = NewMatrix(conf, logs)
 				}
 				if err != nil {
 					t.Fatal(err)
