@@ -44,8 +44,114 @@ export const MAX_IMAGES = 4;
 export const MAX_EDIT_SOURCES = 3;
 export const MIN_VIDEO_SECONDS = 0.7;
 export const MAX_VIDEO_SECONDS = 6.7;
+// terra fork: an H3 clip is 7 chunks = 17 * 7 + 5 = 124 frames at 24 fps. Send exactly that: "5.17" is
+// 124.08 frames, which the engine rounds up to 8 chunks and refuses ("makes 5.17 to 5.17 seconds").
+export const H3_SECONDS = 124 / 24;
+
+// terra fork: H3's chat default is 20 res_multistep steps at half size then the upscale (210 s at 1152x640,
+// as clean as 50 steps); the hmnsfw LoRA is served (<lora:hmnsfw:0.7> in the prompt, or "loras").
+// terra fork: H3 runs on one card with caps (llama-swap entry minimax-h3: 5.17 s clips,
+// area <= 1152x640, text to video only); latent_upscale 2 renders the first steps at
+// half size, 286 s instead of 727 s for 1152x640. A start picture pins the clip at its
+// size, and Radiance refuses latent_upscale alongside a keyframe, so buildVideoFormData
+// drops it from i2va requests (the single stage then runs the full-size 20 steps).
+export interface VideoProfile {
+  sizes: string[];
+  defaultSize: string;
+  minSeconds: number;
+  maxSeconds: number;
+  /** The form field a start picture goes in; null = not supported. */
+  startImage: "input_reference" | "first_frame" | null;
+  /** LoRA names the server's --lora-dir holds for this model (LORA_INFO). */
+  loras: string[];
+  /** Reference pictures allowed; 0 = none. */
+  maxRefs: number;
+  extra: Record<string, unknown>;
+  describe: string;
+}
+export const VIDEO_PROFILES: Record<string, VideoProfile> = {
+  ltx: {
+    sizes: VIDEO_SIZES,
+    defaultSize: "960x544",
+    minSeconds: MIN_VIDEO_SECONDS,
+    maxSeconds: MAX_VIDEO_SECONDS,
+    startImage: "input_reference",
+    maxRefs: 0,
+    loras: [],
+    extra: {},
+    describe: "ltx: LTX-2.5, fast (about 25 s for 5 s at 960x544), from text or a start picture, 0.7 to 6.7 s",
+  },
+  "minimax-h3": {
+    sizes: ["1152x640", "960x544", "672x384", "640x1152", "544x960", "768x768"],
+    defaultSize: "1152x640",
+    minSeconds: H3_SECONDS,
+    maxSeconds: H3_SECONDS,
+    startImage: "first_frame",
+    maxRefs: 9,
+    loras: ["hmnsfw"],
+    extra: { latent_upscale: 2, num_inference_steps: 20, sampler: "res_multistep" },
+    describe:
+      "minimax-h3: MiniMax-H3, higher quality with richer sound, slow (about 3.5 minutes), from text, a start picture or up to 9 reference pictures, always 5.17 s, at most 1152x640",
+  },
+  "minimax-h3-ref": {
+    sizes: ["1152x640", "960x544", "672x384", "640x1152", "544x960", "768x768"],
+    defaultSize: "1152x640",
+    minSeconds: H3_SECONDS,
+    maxSeconds: H3_SECONDS,
+    startImage: "first_frame",
+    maxRefs: 9,
+    loras: ["hmnsfw"],
+    extra: { latent_upscale: 2, num_inference_steps: 20, sampler: "res_multistep" },
+    describe:
+      "minimax-h3-ref: MiniMax-H3's Ref2VA model, best for putting the subject of reference pictures into a new scene; same sizes and length as minimax-h3",
+  },
+};
+export function videoProfile(model: string): VideoProfile {
+  return VIDEO_PROFILES[model] ?? VIDEO_PROFILES.ltx;
+}
+
+// terra fork: the LoRAs terra's llama-swap serves for the minimax entries (/root/models/loras/h3, slot rank 16).
+// `shift` is the video sigma shift the LoRA's author asks for, sent unless the call already sets one.
+export const LORA_INFO: Record<string, { note: string; shift?: number }> = {
+  hmnsfw: { note: "HMNSFW V2.5: explicit adult content (nudity and sex acts); strength 0.5-0.9, 0.7 typical", shift: 6 },
+};
+
+/**
+ * terra fork: MiniMax-H3's prompt format, condensed from MiniMax's VIDEO_PROMPT_WRITING_GUIDE_base_en.md and
+ * VIDEO_PROMPT_WRITING_GUIDE_ref_en.md (huggingface.co/MiniMaxAI/MiniMax-H3/docs). The model was trained on these
+ * structured rewrites, not on short captions. Radiance shows reference pictures to the text encoder as
+ * <Picture 1>, <Picture 2>, ... in front of the prompt, in the order of `references`.
+ */
+export const H3_PROMPT_GUIDE =
+  "MiniMax-H3 prompt format (minimax models): write the prompt in English as MiniMax's structured rewrite, not a " +
+  "caption. The clip is 5.17 s, so cut times stay under 00:05. " +
+  "(A) Text only: three fields separated by blank lines: " +
+  "'integrated_multimodal_description: [Shot 1] <style, e.g. Live-action, cinematic,> <shot size and framing>, " +
+  "<subject appearance, position, action>, <setting and light>, <camera motion as type + amplitude + speed, e.g. " +
+  "the camera pushes in with small amplitude at slow speed>. [Shot 2] At 00:03.000, the camera cuts to ...' then " +
+  "'overall_soundscape: <ambience, action sounds, non-verbal human sounds>' then 'non_diegetic_music: <genre, " +
+  "instruments, tempo, dynamics, or N/A>'. Speakers get stable ids with a voice description, e.g. 'the calm, " +
+  "slightly raspy baker (S1) says: <d>[English] First batch of the morning.</d>'; keep dialogue short enough to " +
+  "speak in the time. " +
+  "(B) With a start picture (image): the FIRST line must be exactly 'For the target video, at 0.00 seconds into the " +
+  "target video, <Picture 1> (from [Shot 1]) is fully referenced.' then a blank line, then the three fields of (A), " +
+  "where [Shot 1] starts from what <Picture 1> shows ('the young woman shown in <Picture 1> remains beside the " +
+  "window, preserving her appearance, clothing and the layout') and develops forward. " +
+  "(C) With reference pictures (references): <Picture N> is the N-th id in `references`. Write six sections " +
+  "separated by blank lines: 'subject_definitions:' one line per reusable item, '<Subject 1> is the <thing> in " +
+  "<Picture 1>, with <key visible features>.'; 'summary: [reference generation] <one short paragraph: what the " +
+  "video shows and which subjects it uses>'; 'retention_analysis: <Subject 1> (appears in [Shot 1]): fully_preserved " +
+  "- <what is kept>.'; 'detailed_description: <one or two sentences of overall style>. [Shot 1] ...' (as (A), but use " +
+  "the <Subject N> labels at each appearance and restate their features; 350-500 words); 'overall_soundscape: ...'; " +
+  "'non_diegetic_music: ...'. Use 'the shot begins from <Picture N>' only when a picture is a frame of the video. " +
+  "LoRAs: pass them in `loras` (e.g. {\"hmnsfw\": 0.7}) rather than as <lora:...> tags in the prompt.";
 
 const ID_HINT = "Pictures are named by id: att1, att2, ... are the user's attachments, img1, img2, ... generated ones.";
+
+// Every model takes only its own sizes; the union is what the tool can offer.
+const VIDEO_TOOL_SIZES = [...new Set(Object.values(VIDEO_PROFILES).flatMap((p) => p.sizes))];
+const VIDEO_MIN_SECONDS = Math.min(...Object.values(VIDEO_PROFILES).map((p) => p.minSeconds));
+const VIDEO_MAX_SECONDS = Math.max(...Object.values(VIDEO_PROFILES).map((p) => p.maxSeconds));
 
 export const MEDIA_TOOLS: ToolDefinition[] = [
   {
@@ -109,19 +215,56 @@ export const MEDIA_TOOLS: ToolDefinition[] = [
       name: VIDEO_TOOL,
       description:
         "Generate a short video clip from a text prompt and show it to the user, optionally starting from a " +
-        `picture (image to video). ${ID_HINT} Describe the scene, the motion and the camera in English. ` +
-        "Takes minutes; use it only when the user asks for a video.",
+        `picture (image to video, works with ltx and the minimax models) or using reference pictures (works with the ` +
+        `minimax models). ${ID_HINT} For ltx, describe the scene, the motion and the camera in English. ` +
+        H3_PROMPT_GUIDE + " Takes minutes; use it only when the user asks for a video.",
       parameters: {
         type: "object",
         properties: {
-          prompt: { type: "string", description: "Detailed description of the scene, the motion and the camera." },
-          image: { type: "string", description: "Optional id of the picture the video starts from, e.g. \"img1\"." },
-          size: { type: "string", enum: VIDEO_SIZES, description: "WIDTHxHEIGHT, default 960x544 (16:9)." },
+          prompt: {
+            type: "string",
+            description:
+              "The video prompt. ltx: a detailed English description of the scene, motion and camera. minimax models: " +
+              "the structured MiniMax-H3 format from the tool description (fields, [Shot N], <d>[Language] ...</d>, " +
+              "<Picture N> / <Subject N>).",
+          },
+          model: {
+            type: "string",
+            enum: Object.keys(VIDEO_PROFILES),
+            description:
+              "Video model; default: the one picked on the Video tab. " +
+              Object.values(VIDEO_PROFILES).map((p) => p.describe).join("; "),
+          },
+          image: {
+            type: "string",
+            description: "Optional id of the picture the video starts from, e.g. \"img1\" (ltx and the minimax models).",
+          },
+          references: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Up to 9 picture ids whose subjects, objects or style the video should use (MiniMax-H3 models only; " +
+              "the pictures are shown to the model as <Picture 1>, <Picture 2>, ... in that order, so the prompt may refer to them).",
+          },
+          loras: {
+            type: "object",
+            additionalProperties: { type: "number" },
+            description:
+              "Optional LoRA name -> strength (minimax models only). Available: " +
+              Object.entries(LORA_INFO).map(([k, v]) => `${k} (${v.note})`).join("; ") +
+              ". Use one only when the user asks for what it is for.",
+          },
+          size: {
+            type: "string",
+            enum: VIDEO_TOOL_SIZES,
+            description:
+              "WIDTHxHEIGHT; each model takes only its own sizes (ltx default 960x544, minimax-h3 default 1152x640).",
+          },
           seconds: {
             type: "number",
-            minimum: MIN_VIDEO_SECONDS,
-            maximum: MAX_VIDEO_SECONDS,
-            description: "Clip length in seconds, default 5.",
+            minimum: VIDEO_MIN_SECONDS,
+            maximum: VIDEO_MAX_SECONDS,
+            description: "Clip length in seconds, default 5 (minimax-h3 is always 5.17 s).",
           },
         },
         required: ["prompt"],
@@ -173,9 +316,13 @@ export interface ParsedEditArgs {
 export interface ParsedVideoArgs {
   kind: "video";
   prompt: string;
+  model: string;
   size: string;
   seconds: number;
+  extra: Record<string, unknown>;
   image?: string;
+  /** Reference picture ids, de-duplicated, order kept. */
+  references: string[];
 }
 
 function countArg(v: unknown): number {
@@ -217,12 +364,62 @@ export function parseMediaArgs(
     return { kind: "edit", prompt, images, size, n: countArg(a.n), negativePrompt: textArg(a.negative_prompt) };
   }
   if (name === VIDEO_TOOL) {
-    if (!ctx.videoModel) return { error: "no video model is selected on the Video tab" };
-    const size = typeof a.size === "string" && VIDEO_SIZES.includes(a.size) ? a.size : ctx.videoSize;
+    const model = typeof a.model === "string" && a.model in VIDEO_PROFILES ? a.model : ctx.videoModel;
+    if (!model) return { error: "no video model is selected on the Video tab" };
+    const profile = videoProfile(model);
+    const size =
+      typeof a.size === "string" && profile.sizes.includes(a.size)
+        ? a.size
+        : profile.sizes.includes(ctx.videoSize)
+          ? ctx.videoSize
+          : profile.defaultSize;
     const rawS = Number(a.seconds);
     const base = Number.isFinite(rawS) && rawS > 0 ? rawS : ctx.videoSeconds;
-    const seconds = Math.min(MAX_VIDEO_SECONDS, Math.max(MIN_VIDEO_SECONDS, base));
-    return { kind: "video", prompt, size, seconds, image: textArg(a.image) };
+    const seconds = Math.min(profile.maxSeconds, Math.max(profile.minSeconds, base));
+    const image = textArg(a.image);
+    const references = [
+      ...new Set(
+        (Array.isArray(a.references) ? a.references : [])
+          .filter((v): v is string => typeof v === "string" && v.trim() !== "")
+          .map((v) => v.trim())
+      ),
+    ];
+    if (references.length > 0 && profile.maxRefs === 0) {
+      return { error: `${model} takes no reference pictures; use minimax-h3 or minimax-h3-ref` };
+    }
+    if (references.length > profile.maxRefs) {
+      return { error: `${model} takes at most ${profile.maxRefs} reference pictures` };
+    }
+    if (image && references.length > 0) {
+      return { error: "give either a start picture (image) or reference pictures (references), not both" };
+    }
+    if (image && !profile.startImage) {
+      return {
+        error: `${model} makes video from text only; call generate_video again without image, or with model "ltx" to start from a picture`,
+      };
+    }
+    const loras: Record<string, number> = {};
+    if (a.loras && typeof a.loras === "object" && !Array.isArray(a.loras)) {
+      for (const [k, v] of Object.entries(a.loras as Record<string, unknown>)) {
+        const w = Number(v);
+        if (!Number.isFinite(w) || w === 0) continue;
+        if (!profile.loras.includes(k)) {
+          return {
+            error: profile.loras.length
+              ? `${model} has no LoRA "${k}"; available: ${profile.loras.join(", ")}`
+              : `${model} takes no LoRAs; use minimax-h3 or minimax-h3-ref`,
+          };
+        }
+        loras[k] = Math.max(-2, Math.min(2, w));
+      }
+    }
+    const extra: Record<string, unknown> = { ...profile.extra };
+    if (Object.keys(loras).length) {
+      extra.loras = loras;
+      const shift = Object.keys(loras).map((k) => LORA_INFO[k]?.shift).find((v) => v !== undefined);
+      if (shift !== undefined && extra.shift === undefined) extra.shift = shift;
+    }
+    return { kind: "video", prompt, model, size, seconds, extra, image, references };
   }
   return { error: `unknown tool ${name}` };
 }
@@ -372,10 +569,14 @@ export async function runMediaTool(
             jobKind: "videos",
             status: "running",
             prompt: parsed.prompt,
-            model: ctx.videoModel,
+            model: parsed.model,
             size: parsed.size,
             seconds: parsed.seconds,
-            ...(parsed.image ? { sources: [parsed.image] } : {}),
+            ...(parsed.image
+              ? { sources: [parsed.image] }
+              : parsed.references.length
+                ? { sources: parsed.references }
+                : {}),
           };
   onUpdate(media);
 
@@ -412,7 +613,35 @@ export async function runMediaTool(
         if ("error" in files) return fail(files.error);
         start = files[0];
       }
-      const form = buildVideoFormData(ctx.videoModel, parsed.prompt, { size: parsed.size, seconds: parsed.seconds }, start);
+      let refs: File[] = [];
+      if (parsed.references.length) {
+        const files = await resolveAll(parsed.references, ctx);
+        if ("error" in files) return fail(files.error);
+        refs = files;
+      }
+      const profile = videoProfile(parsed.model);
+      let form: FormData;
+      if (profile.startImage === "input_reference") {
+        form = buildVideoFormData(parsed.model, parsed.prompt, {
+          size: parsed.size,
+          seconds: parsed.seconds,
+          advanced: parsed.extra,
+        }, start);
+      } else if (profile.startImage === "first_frame") {
+        const task = start ? "i2va" : refs.length ? "ref2va" : undefined;
+        form = buildVideoFormData(parsed.model, parsed.prompt, {
+          size: parsed.size,
+          seconds: parsed.seconds,
+          advanced: { ...parsed.extra, task },
+        }, null, start);
+        refs.forEach((file, i) => form.append(`ref_image_${i + 1}`, file));
+      } else {
+        form = buildVideoFormData(parsed.model, parsed.prompt, {
+          size: parsed.size,
+          seconds: parsed.seconds,
+          advanced: parsed.extra,
+        }, null);
+      }
       const job = await createFormServerJob("videos", form, ctx.reloadModel, signal);
       media = { ...media, jobId: job.id };
     }

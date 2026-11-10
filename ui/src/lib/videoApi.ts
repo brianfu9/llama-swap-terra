@@ -5,21 +5,36 @@ const TERMINAL_FAILURE_STATUSES = new Set(["failed", "error", "cancelled", "canc
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 const DEFAULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
+// terra fork: Radiance rounds a length UP to whole frames, then whole chunks, and refuses one chunk too
+// many, so 5.17 s (124.08 frames) fails on minimax-h3's 124-frame clip. Round down to 2 decimals: a
+// length a little short is raised to the model's minimum, never refused.
+export function videoSecondsField(seconds: number): string {
+  return String(Math.floor(Number(seconds) * 100 + 1e-6) / 100);
+}
+
 export function buildVideoFormData(
   model: string,
   prompt: string,
   params: VideoGenerationParams,
-  referenceFile?: File | null
+  referenceFile?: File | null,
+  keyframe?: File | null
 ): FormData {
   const formData = new FormData();
   formData.append("model", model);
   formData.append("prompt", prompt);
   if (params.size) formData.append("size", params.size);
-  if (params.seconds !== undefined) formData.append("seconds", String(params.seconds));
+  if (params.seconds !== undefined) formData.append("seconds", videoSecondsField(params.seconds));
   // terra fork: 0 or empty leaves fps to the backend; Radiance refuses an fps field outright.
   if (params.fps !== undefined && params.fps !== null && Number(params.fps) > 0) formData.append("fps", String(params.fps));
   if (params.negativePrompt) formData.append("negative_prompt", params.negativePrompt);
   if (referenceFile) formData.append("input_reference", referenceFile);
+  if (keyframe) formData.append("first_frame", keyframe);
+
+  // terra fork: a keyframe pins a frame of the video at its size, and latent_upscale denoises a
+  // smaller one first, so Radiance refuses the pair (400 "send the keyframe request without
+  // latent_upscale"). Drop it when a start picture rides along; the two-stage recipe stays for
+  // text-only and reference-picture requests.
+  const keyframed = Boolean(referenceFile || keyframe);
 
   // Backend-specific extension fields (e.g. vLLM-omni's width/height/
   // num_frames/seed/extra_params - see the "vllm-omni extension fields"
@@ -31,6 +46,7 @@ export function buildVideoFormData(
   if (params.advanced) {
     for (const [key, value] of Object.entries(params.advanced)) {
       if (key === "model" || value === undefined) continue;
+      if (keyframed && key === "latent_upscale") continue;
       formData.set(key, typeof value === "object" && value !== null ? JSON.stringify(value) : String(value));
     }
   }
