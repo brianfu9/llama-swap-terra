@@ -290,7 +290,7 @@ func TestMetricsMonitor_RecordClientGoneMidStream(t *testing.T) {
 			copier.WriteHeader(http.StatusOK)
 			copier.Write([]byte(tc.body))
 
-			mm.record("m", r, copier, 0, nil, nil)
+			mm.record("m", hint.TaskChat, r, copier, 0, nil, nil)
 
 			entries := metricsEntries(t, mm)
 			if len(entries) != 1 {
