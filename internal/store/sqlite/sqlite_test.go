@@ -354,8 +354,8 @@ func TestStore_ActivityStats(t *testing.T) {
 	for _, p := range stats.PromptScatter {
 		promptSessions[p.Length] = p.Session
 	}
-	if _, ok := promptSessions[10]; !ok {
-		t.Fatalf("prompt scatter lengths = %+v, want length 10", stats.PromptScatter)
+	if _, ok := promptSessions[8]; !ok {
+		t.Fatalf("prompt scatter lengths = %+v, want length 8 (10 input - 2 cached)", stats.PromptScatter)
 	}
 	if _, ok := promptSessions[5]; !ok {
 		t.Fatalf("prompt scatter lengths = %+v, want length 5", stats.PromptScatter)
@@ -364,8 +364,8 @@ func TestStore_ActivityStats(t *testing.T) {
 	for _, p := range stats.PromptScatter {
 		promptMs[p.Length] = p.PrefillMs
 	}
-	if promptMs[10] != 250 {
-		t.Errorf("prompt scatter prefill_ms for length 10 = %d, want 250", promptMs[10])
+	if promptMs[8] != 250 {
+		t.Errorf("prompt scatter prefill_ms for length 8 = %d, want 250", promptMs[8])
 	}
 	// "No timing" has two spellings: buildMetrics and the 00004 timing migration both
 	// write -1, while a TokenMetrics built without PromptMs stores Go's zero.
@@ -373,8 +373,8 @@ func TestStore_ActivityStats(t *testing.T) {
 	if promptMs[5] != 0 {
 		t.Errorf("prompt scatter prefill_ms for length 5 = %d, want 0 (unset)", promptMs[5])
 	}
-	if promptSessions[10] != "ses_test1" {
-		t.Errorf("prompt scatter session for length 10 = %q, want ses_test1", promptSessions[10])
+	if promptSessions[8] != "ses_test1" {
+		t.Errorf("prompt scatter session for length 8 = %q, want ses_test1", promptSessions[8])
 	}
 	if promptSessions[5] != "" {
 		t.Errorf("prompt scatter session for length 5 = %q, want empty (no metadata)", promptSessions[5])
@@ -387,33 +387,33 @@ func TestStore_ActivityStats(t *testing.T) {
 	for _, g := range stats.GenScatter {
 		genByContext[g.Context] = g
 	}
-	// Context is input + cache: 10+2 for the first row, 5+(-1) for the second.
-	got, ok := genByContext[12]
+	// Context is input_tokens, which includes the cache (v272): 10 and 5.
+	got, ok := genByContext[10]
 	if !ok {
-		t.Fatalf("gen scatter missing context 12: %+v", stats.GenScatter)
+		t.Fatalf("gen scatter missing context 10: %+v", stats.GenScatter)
 	}
 	if got.Speed != 50 || got.Output != 20 || got.Session != "ses_test1" {
-		t.Errorf("gen scatter[12] = %+v, want speed 50 output 20 session ses_test1", got)
+		t.Errorf("gen scatter[10] = %+v, want speed 50 output 20 session ses_test1", got)
 	}
 	if got.Accept != 0.7 {
-		t.Errorf("gen scatter[12] accept = %v, want 0.7 (7/10)", got.Accept)
+		t.Errorf("gen scatter[10] accept = %v, want 0.7 (7/10)", got.Accept)
 	}
 	// ts_end_ms keeps the millisecond part ts_created drops.
 	if got.EndMs != 1250 || got.DecodeMs != 400 {
-		t.Errorf("gen scatter[12] end_ms/decode_ms = %d/%d, want 1250/400", got.EndMs, got.DecodeMs)
+		t.Errorf("gen scatter[10] end_ms/decode_ms = %d/%d, want 1250/400", got.EndMs, got.DecodeMs)
 	}
-	got, ok = genByContext[4]
+	got, ok = genByContext[5]
 	if !ok {
-		t.Fatalf("gen scatter missing context 4: %+v", stats.GenScatter)
+		t.Fatalf("gen scatter missing context 5: %+v", stats.GenScatter)
 	}
 	if got.Speed != 100 || got.Output != 8 {
-		t.Errorf("gen scatter[4] = %+v, want speed 100 output 8", got)
+		t.Errorf("gen scatter[5] = %+v, want speed 100 output 8", got)
 	}
 	if got.Accept != -1 {
-		t.Errorf("gen scatter[4] accept = %v, want -1 (draft_tokens == 0)", got.Accept)
+		t.Errorf("gen scatter[5] accept = %v, want -1 (draft_tokens == 0)", got.Accept)
 	}
 	if got.Session != "" {
-		t.Errorf("gen scatter[4] session = %q, want empty (no metadata)", got.Session)
+		t.Errorf("gen scatter[5] session = %q, want empty (no metadata)", got.Session)
 	}
 }
 

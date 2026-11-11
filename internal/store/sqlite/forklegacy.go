@@ -24,7 +24,8 @@ import (
 // recorded versions. When the activity table has the fork's prompt_ms but
 // lacks one of upstream's columns, it applies the missing upstream Up
 // sections and rewrites goose_db_version to the current numbering, all in one
-// transaction. goose then applies whatever is still pending. Fresh databases
+// transaction, and converts old rows' input_tokens to upstream's meaning.
+// goose then applies whatever is still pending. Fresh databases
 // and databases already on the current numbering are left untouched.
 func renumberForkMigrations(ctx context.Context, db *sql.DB) error {
 	if ok, err := tableExists(ctx, db, "goose_db_version"); err != nil || !ok {
@@ -70,6 +71,17 @@ func renumberForkMigrations(ctx context.Context, db *sql.DB) error {
 		}
 		if _, err := tx.ExecContext(ctx, up); err != nil {
 			return fmt.Errorf("fork migration renumber: apply %s: %w", m.file, err)
+		}
+	}
+
+	// Before v272 the fork stored llama-server/Radiance prompt_n alone as
+	// input_tokens; upstream now stores the whole prompt (prompt_n + cache_n).
+	// Rows with timings (prompt_ms >= 0) get the cached part added once, here,
+	// inside the same transaction as the version rewrite.
+	if !cols["task"] {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE activity SET input_tokens = input_tokens + cache_tokens WHERE prompt_ms >= 0 AND cache_tokens > 0`); err != nil {
+			return fmt.Errorf("fork migration renumber: input_tokens: %w", err)
 		}
 	}
 

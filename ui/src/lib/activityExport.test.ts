@@ -174,6 +174,8 @@ describe("summarizeActivity", () => {
           output_tokens: 0,
           prompt_per_second: 100,
           tokens_per_second: -1,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
       entry({
@@ -185,6 +187,8 @@ describe("summarizeActivity", () => {
           output_tokens: 0,
           prompt_per_second: 300,
           tokens_per_second: -1,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
     ]);
@@ -205,6 +209,8 @@ describe("summarizeActivity", () => {
           output_tokens: 0,
           prompt_per_second: 100,
           tokens_per_second: -1,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
     ]);
@@ -223,6 +229,8 @@ describe("summarizeActivity", () => {
           output_tokens: 0,
           prompt_per_second: 999,
           tokens_per_second: -1,
+          prompt_ms: -1,
+          predicted_ms: -1,
         },
       }),
     ]);

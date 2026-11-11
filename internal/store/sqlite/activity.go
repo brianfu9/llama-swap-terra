@@ -244,9 +244,11 @@ func (r *activityRepository) speedValues(ctx context.Context, where string, args
 		}
 		if promptValue > 0 {
 			prompt = append(prompt, promptValue)
-			if inputTokens > 0 {
+			// InputTokens includes the cached part (v272); the prefill length
+			// is the part actually processed.
+			if processed := inputTokens - max(cacheTokens, 0); processed > 0 {
 				scatter = append(scatter, store.PromptScatterPoint{
-					Length:    inputTokens,
+					Length:    processed,
 					Speed:     promptValue,
 					PrefillMs: promptMs,
 					Session:   session,
@@ -255,7 +257,7 @@ func (r *activityRepository) speedValues(ctx context.Context, where string, args
 		}
 		if genValue > 0 {
 			gen = append(gen, genValue)
-			if context := inputTokens + cacheTokens; context > 0 {
+			if context := inputTokens; context > 0 {
 				// -1 is the "no data" sentinel, matching prompt_ms/predicted_ms.
 				accept := -1.0
 				if draftTokens > 0 {
