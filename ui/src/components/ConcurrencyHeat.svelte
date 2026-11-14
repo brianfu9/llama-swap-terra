@@ -2,12 +2,20 @@
   import { onMount } from "svelte";
   import { Chart, ScatterController, PointElement, LineElement, LinearScale, Title, Tooltip } from "chart.js";
   import type { TooltipItem } from "chart.js";
-  import type { ConcurrencyData, ConcurrencyLevel } from "../lib/concurrency";
+  import type { ConcurrencyData, ConcurrencyLevel, ConcurrencyPoint } from "../lib/concurrency";
   import { isDarkMode } from "../stores/theme";
   import * as Card from "$lib/components/ui/card/index.js";
   import { formatCompact } from "../lib/format";
   import { heatmapPlugin, setHeatmapState, type HeatCell, type HeatGrid } from "../lib/heatmap";
-  import { densityColor, densityRamp, densityThresholds } from "../lib/scatterColor";
+  import {
+    densityThresholds,
+    densityColor,
+    densityRamp,
+    latestSession,
+    shortSession,
+    LATEST_DARK,
+    LATEST_LIGHT,
+  } from "../lib/scatterColor";
 
   Chart.register(ScatterController, PointElement, LineElement, LinearScale, Title, Tooltip, heatmapPlugin);
 
@@ -23,6 +31,12 @@
   let { data, solo = false }: { data: ConcurrencyData; solo?: boolean } = $props();
 
   const speedOf = (p: { speed: number; soloEquiv: number }) => (solo ? p.soloEquiv : p.speed);
+
+  // The latest session's requests, drawn as individual dots on top of the
+  // density cells, as in DecodeScatter. Points keep the endpoint's
+  // oldest-to-newest order, so the last one with a session is the latest.
+  let latest = $derived(latestSession(data.points.map((p) => p.session)));
+  let overlay = $derived(latest === "" ? [] : data.points.filter((p) => p.session === latest));
 
   let canvas: HTMLCanvasElement;
   let chart: Chart<"scatter">;
@@ -88,6 +102,7 @@
       tooltipBorder: dark ? "#374151" : "#e5e7eb",
       system: dark ? "#4ade80" : "#16a34a",
       ideal: dark ? "#9ca3af" : "#6b7280",
+      latest: dark ? LATEST_DARK : LATEST_LIGHT,
     };
   }
 
@@ -99,6 +114,11 @@
   function cellOf(item: TooltipItem<"scatter">): HeatCell | undefined {
     const dataset = item.dataset as unknown as { cells?: HeatCell[] };
     return dataset.cells?.[item.dataIndex];
+  }
+
+  function overlayPointOf(item: TooltipItem<"scatter">): ConcurrencyPoint | undefined {
+    const dataset = item.dataset as unknown as { sourcePoints?: ConcurrencyPoint[] };
+    return dataset.sourcePoints?.[item.dataIndex];
   }
 
   function busyLabel(ms: number): string {
@@ -130,12 +150,23 @@
           borderWidth: 1,
           callbacks: {
             title: (items: TooltipItem<"scatter">[]) => {
-              const level = items[0] && levelOf(items[0]);
+              const item = items[0];
+              if (!item) return "";
+              const point = overlayPointOf(item);
+              if (point) return `latest session ${shortSession(point.session)}`;
+              const level = levelOf(item);
               if (level) return `${level.k} decoding at once`;
-              const cell = items[0] && cellOf(items[0]);
+              const cell = cellOf(item);
               return cell ? `k ≈ ${cell.cx}` : "";
             },
             label: (item: TooltipItem<"scatter">) => {
+              const point = overlayPointOf(item);
+              if (point) {
+                return [
+                  `${formatCompact(speedOf(point))} tok/s ${solo ? "solo-equivalent" : "per stream"}`,
+                  `mean concurrency k ≈ ${point.meanK.toFixed(1)}`,
+                ];
+              }
               const level = levelOf(item);
               if (level) {
                 const lines = [`system: ${formatCompact(level.systemTps)} tok/s`];
@@ -203,6 +234,18 @@
         borderColor: "transparent",
       },
     ];
+    if (overlay.length > 0) {
+      datasets.push({
+        label: `latest session ${shortSession(latest)}`,
+        // Placed at each request's true mean k, inside its rounded column.
+        data: overlay.map((p) => ({ x: p.meanK, y: speedOf(p) })),
+        sourcePoints: overlay,
+        backgroundColor: colors.latest,
+        borderWidth: 0,
+        pointRadius: 2.5,
+        pointHoverRadius: 5,
+      });
+    }
     if (data.soloTps > 0) {
       datasets.push({
         label: "ideal",
@@ -270,6 +313,15 @@
           {formatCompact(grid.maxCount)} req/cell ({solo ? "solo-equivalent" : "per stream"})
         </span>
       </span>
+      {#if overlay.length > 0}
+        <span class="flex items-center gap-1">
+          <span
+            class="inline-block size-2 rounded-full"
+            style="background: {getChartColors($isDarkMode).latest}"
+          ></span>
+          <span class="text-muted-foreground text-xs">latest session {shortSession(latest)}</span>
+        </span>
+      {/if}
       <span class="flex items-center gap-1">
         <span class="inline-block w-4 border-t-[3px]" style="border-color: {getChartColors($isDarkMode).system}"></span>
         <span class="text-muted-foreground text-xs">system</span>

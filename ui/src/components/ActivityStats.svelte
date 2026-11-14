@@ -48,6 +48,7 @@
         preemptedMs: p.preempted_ms,
         output: p.output,
         speed: p.speed,
+        session: p.session,
       })),
     ),
   );

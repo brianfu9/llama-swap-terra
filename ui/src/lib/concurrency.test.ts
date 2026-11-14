@@ -26,6 +26,14 @@ describe("buildConcurrency", () => {
     expect(data.untimed).toBe(2);
   });
 
+  it("carries each request's session through to its point", () => {
+    const data = buildConcurrency([
+      { ...decode(1000, 1000, 50), session: "ses_abc" },
+      { ...decode(3000, 1000, 50) },
+    ]);
+    expect(data.points.map((p) => p.session)).toEqual(["ses_abc", ""]);
+  });
+
   it("reports k = 1 and no speedup for back-to-back decodes", () => {
     // Touching at t=1000 is not an overlap.
     const data = buildConcurrency([decode(1000, 1000, 50), decode(2000, 1000, 50)]);

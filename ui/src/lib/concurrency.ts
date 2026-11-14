@@ -44,6 +44,8 @@ export interface DecodeSample {
   output: number;
   /** Reported per-request decode rate, tokens/sec. */
   speed: number;
+  /** Client session id, "" or absent when the request carried none. */
+  session?: string;
 }
 
 /** A stretch of wall clock with a constant set of running decodes. */
@@ -94,6 +96,8 @@ export interface ConcurrencyPoint {
    * and when a level it needs is unreliable (see ConcurrencyLevel.slowdown).
    */
   soloEquiv: number;
+  /** The request's session id, "" when it carried none. */
+  session: string;
 }
 
 export interface ConcurrencyData {
@@ -205,6 +209,8 @@ interface Span {
   sysTokens: number;
   /** Index into the input samples. */
   index: number;
+  /** The sample's session id, "" when it carried none. */
+  session: string;
 }
 
 export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
@@ -234,6 +240,7 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
       kMs: 0,
       sysTokens: 0,
       index,
+      session: s.session ?? "",
     });
   }
   if (spans.length === 0) return { ...EMPTY, systemSpeeds, soloSpeeds, untimed };
@@ -291,7 +298,13 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
     // rather than the reported speed, which can differ by rounding; keep the
     // reported figure there so solo points do not move when this mode is on.
     systemSpeeds[sp.index] = meanK <= 1 + 1e-9 ? sp.speed : (sp.sysTokens / dur) * 1000;
-    return { meanK, k: Math.max(1, Math.round(meanK)), speed: sp.speed, soloEquiv: sp.speed };
+    return {
+      meanK,
+      k: Math.max(1, Math.round(meanK)),
+      speed: sp.speed,
+      soloEquiv: sp.speed,
+      session: sp.session,
+    };
   });
 
   const solo = busy.get(1);
