@@ -234,18 +234,6 @@
         borderColor: "transparent",
       },
     ];
-    if (overlay.length > 0) {
-      datasets.push({
-        label: `latest session ${shortSession(latest)}`,
-        // Placed at each request's true mean k, inside its rounded column.
-        data: overlay.map((p) => ({ x: p.meanK, y: speedOf(p) })),
-        sourcePoints: overlay,
-        backgroundColor: colors.latest,
-        borderWidth: 0,
-        pointRadius: 2.5,
-        pointHoverRadius: 5,
-      });
-    }
     if (data.soloTps > 0) {
       datasets.push({
         label: "ideal",
@@ -270,6 +258,20 @@
       pointRadius: 3.5,
       pointHoverRadius: 6,
     });
+    if (overlay.length > 0) {
+      // Pushed last so the dots draw over the system/ideal points, which
+      // would otherwise sit on top of them.
+      datasets.push({
+        label: `latest session ${shortSession(latest)}`,
+        // Placed at each request's true mean k, inside its rounded column.
+        data: overlay.map((p) => ({ x: p.meanK, y: speedOf(p) })),
+        sourcePoints: overlay,
+        backgroundColor: colors.latest,
+        borderWidth: 0,
+        pointRadius: 2.5,
+        pointHoverRadius: 5,
+      });
+    }
     return { datasets };
   }
 
