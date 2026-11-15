@@ -86,8 +86,6 @@ export interface ConcurrencyLevel {
   perStreamMedian: number;
   /** systemTps / solo systemTps, or 0 with no solo baseline. */
   speedup: number;
-  /** k x solo systemTps: what perfect linear scaling would give. */
-  idealTps: number;
   /**
    * Per-stream slowdown vs solo, k / speedup: how much slower one stream
    * decodes at this k than alone. 1 at k = 1. 0 when unreliable: no solo
@@ -105,9 +103,10 @@ export interface ConcurrencyPoint {
   /** Active decode speed: output / (decodeMs - preemptedMs). The reported speed when nothing was preempted. */
   speed: number;
   /**
-   * Estimated tok/s had this request run alone: speed x slowdown(meanK),
-   * slowdown interpolated between whole levels. Equals speed when meanK <= 1,
-   * and when a level it needs is unreliable (see ConcurrencyLevel.slowdown).
+   * Estimated tok/s had this request run alone: its speed when meanK <= 1,
+   * else the solo-speed model's prediction for it (see the file header),
+   * clamped to its own speed; the level-slowdown factor is the fallback when
+   * the model is not fit.
    */
   soloEquiv: number;
   /** The request's session id, "" when it carried none. */
@@ -116,6 +115,13 @@ export interface ConcurrencyPoint {
   context: number;
   /** Draft acceptance rate 0..1; -1 when the request carried no draft data. */
   accept: number;
+  /**
+   * The system rate averaged over the request's own decode: its own speed
+   * when it ran alone, what the GPU produced in total otherwise.
+   */
+  systemSpeed: number;
+  /** Active decode time in ms. */
+  activeMs: number;
 }
 
 export interface ConcurrencyData {
@@ -385,7 +391,8 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
     // Solo, sysTokens/dur is the span's own token rate (output / predicted_ms)
     // rather than the reported speed, which can differ by rounding; keep the
     // reported figure there so solo points do not move when this mode is on.
-    systemSpeeds[sp.index] = meanK <= 1 + 1e-9 ? sp.speed : (sp.sysTokens / dur) * 1000;
+    const sysSpeed = meanK <= 1 + 1e-9 ? sp.speed : (sp.sysTokens / dur) * 1000;
+    systemSpeeds[sp.index] = sysSpeed;
     return {
       meanK,
       k: Math.max(1, Math.round(meanK)),
@@ -394,6 +401,8 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
       session: sp.session,
       context: sp.context,
       accept: sp.accept,
+      systemSpeed: sysSpeed,
+      activeMs: dur,
     };
   });
 
@@ -429,7 +438,6 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
       requests: speeds.length,
       perStreamMedian: median(speeds),
       speedup,
-      idealTps: k * soloTps,
       slowdown,
     });
   }

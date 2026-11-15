@@ -22,9 +22,9 @@
   // Decode speed against concurrency. Columns are k, the number of decodes
   // running at once; cells are per-request decode speed density, each request
   // placed at its time-weighted mean k. Per-stream speed falls as k rises; the
-  // solid line is what the whole system produced at that k, the dashed line
-  // is perfect linear scaling from the solo rate. The gap between them is what
-  // batching costs; a flat solid line means more agents gain nothing.
+  // solid line is what the whole system produced at that k across all
+  // sessions, the dashed line the same rate while only the latest session's
+  // requests were decoding. A flat solid line means more agents gain nothing.
 
   // solo: plot each request's solo-equivalent speed instead of its own, so
   // the cells sit level with k = 1 when the slowdown explains the drop.
@@ -37,6 +37,25 @@
   // oldest-to-newest order, so the last one with a session is the latest.
   let latest = $derived(latestSession(data.points.map((p) => p.session)));
   let overlay = $derived(latest === "" ? [] : data.points.filter((p) => p.session === latest));
+
+  /**
+   * The latest session's system line: per k, the system rate averaged over
+   * that session's decodes placed in column k, weighted by decode time like
+   * the all-sessions system line.
+   */
+  let sessionLine = $derived.by(() => {
+    if (overlay.length === 0) return [] as { k: number; systemTps: number }[];
+    const byK = new Map<number, { ms: number; tokens: number }>();
+    for (const p of overlay) {
+      const e = byK.get(p.k) ?? { ms: 0, tokens: 0 };
+      e.ms += p.activeMs;
+      e.tokens += p.systemSpeed * p.activeMs;
+      byK.set(p.k, e);
+    }
+    return [...byK.entries()]
+      .map(([k, { ms, tokens }]) => ({ k, systemTps: tokens / ms }))
+      .sort((a, b) => a.k - b.k);
+  });
 
   let canvas: HTMLCanvasElement;
   let chart: Chart<"scatter">;
@@ -82,14 +101,12 @@
   /** A request's rounded mean k never exceeds the highest level seen. */
   let xMax = $derived(Math.max(1, data.maxK));
 
-  /**
-   * Y range covers the cells and the measured system line. The ideal line is
-   * left to clip: k x solo grows without bound and would squash the data.
-   */
+  /** Y range covers the cells and both system lines. */
   let yMax = $derived.by(() => {
     let top = 0;
     for (const p of data.points) top = Math.max(top, speedOf(p));
     for (const l of data.levels) top = Math.max(top, l.systemTps);
+    for (const s of sessionLine) top = Math.max(top, s.systemTps);
     return top > 0 ? Math.ceil((top * 1.12) / 20) * 20 : 20;
   });
 
@@ -101,7 +118,6 @@
       tooltipText: dark ? "#f3f4f6" : "#111827",
       tooltipBorder: dark ? "#374151" : "#e5e7eb",
       system: dark ? "#4ade80" : "#16a34a",
-      ideal: dark ? "#9ca3af" : "#6b7280",
       latest: dark ? LATEST_DARK : LATEST_LIGHT,
     };
   }
@@ -119,6 +135,11 @@
   function overlayPointOf(item: TooltipItem<"scatter">): ConcurrencyPoint | undefined {
     const dataset = item.dataset as unknown as { sourcePoints?: ConcurrencyPoint[] };
     return dataset.sourcePoints?.[item.dataIndex];
+  }
+
+  function sessionLineOf(item: TooltipItem<"scatter">): { k: number; systemTps: number } | undefined {
+    const dataset = item.dataset as unknown as { sessionLine?: { k: number; systemTps: number }[] };
+    return dataset.sessionLine?.[item.dataIndex];
   }
 
   function busyLabel(ms: number): string {
@@ -154,6 +175,8 @@
               if (!item) return "";
               const point = overlayPointOf(item);
               if (point) return `latest session ${shortSession(point.session)}`;
+              const sl = sessionLineOf(item);
+              if (sl) return `latest session ${shortSession(latest)}`;
               const level = levelOf(item);
               if (level) return `${level.k} decoding at once`;
               const cell = cellOf(item);
@@ -166,6 +189,10 @@
                   `${formatCompact(speedOf(point))} tok/s ${solo ? "solo-equivalent" : "per stream"}`,
                   `mean concurrency k ≈ ${point.meanK.toFixed(1)}`,
                 ];
+              }
+              const sl = sessionLineOf(item);
+              if (sl) {
+                return `system: ${formatCompact(sl.systemTps)} tok/s while this session's requests ran at k = ${sl.k}`;
               }
               const level = levelOf(item);
               if (level) {
@@ -234,13 +261,13 @@
         borderColor: "transparent",
       },
     ];
-    if (data.soloTps > 0) {
+    if (sessionLine.length > 0) {
       datasets.push({
-        label: "ideal",
-        data: levels.map((l) => ({ x: l.k, y: l.idealTps })),
-        levels,
+        label: `latest session ${shortSession(latest)} (system)`,
+        data: sessionLine.map((s) => ({ x: s.k, y: s.systemTps })),
+        sessionLine,
         showLine: true,
-        borderColor: colors.ideal,
+        borderColor: colors.latest,
         borderDash: [6, 4],
         borderWidth: 1.5,
         pointRadius: 0,
@@ -259,7 +286,7 @@
       pointHoverRadius: 6,
     });
     if (overlay.length > 0) {
-      // Pushed last so the dots draw over the system/ideal points, which
+      // Pushed last so the dots draw over the system line's points, which
       // would otherwise sit on top of them.
       datasets.push({
         label: `latest session ${shortSession(latest)}`,
@@ -328,10 +355,10 @@
         <span class="inline-block w-4 border-t-[3px]" style="border-color: {getChartColors($isDarkMode).system}"></span>
         <span class="text-muted-foreground text-xs">system</span>
       </span>
-      {#if data.soloTps > 0}
+      {#if sessionLine.length > 0}
         <span class="flex items-center gap-1">
-          <span class="inline-block w-4 border-t-2 border-dashed" style="border-color: {getChartColors($isDarkMode).ideal}"></span>
-          <span class="text-muted-foreground text-xs">ideal (k × solo)</span>
+          <span class="inline-block w-4 border-t-2 border-dashed" style="border-color: {getChartColors($isDarkMode).latest}"></span>
+          <span class="text-muted-foreground text-xs">latest session {shortSession(latest)} (system)</span>
         </span>
       {/if}
     </div>

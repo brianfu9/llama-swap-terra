@@ -60,7 +60,6 @@ describe("buildConcurrency", () => {
     expect(two.systemTps).toBeCloseTo(70, 6);
     expect(two.perStreamMedian).toBeCloseTo(35, 6);
     expect(two.speedup).toBeCloseTo(1.4, 6);
-    expect(two.idealTps).toBeCloseTo(100, 6);
     expect(two.share).toBeCloseTo(4 / 6, 6);
     // Union 6s, summed 10s: 380 tokens.
     expect(data.systemTps).toBeCloseTo(380 / 6, 6);
@@ -97,6 +96,12 @@ describe("buildConcurrency", () => {
     expect(data.systemSpeeds[0]).toBeCloseTo((3000 * 50 + 1000 * 100) / 4000, 6);
     expect(Number.isNaN(data.systemSpeeds[1])).toBe(true);
     expect(data.systemSpeeds[2]).toBeCloseTo((1000 * 100 + 1000 * 50) / 2000, 6);
+    // Timed points carry the same per-request figure and their active time.
+    const [a, b] = data.points;
+    expect(a.systemSpeed).toBeCloseTo((3000 * 50 + 1000 * 100) / 4000, 6);
+    expect(a.activeMs).toBe(4000);
+    expect(b.systemSpeed).toBeCloseTo((1000 * 100 + 1000 * 50) / 2000, 6);
+    expect(b.activeMs).toBe(2000);
   });
 
   it("leaves a solo request at its reported speed", () => {
