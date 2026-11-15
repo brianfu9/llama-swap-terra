@@ -22,11 +22,21 @@
 // approximation that puts all the active time at the end of the request.
 //
 // Solo-equivalent speed: what a request would have decoded at had it run
-// alone. Measured per-stream slowdown at k is soloPerStream / perStream(k) =
-// k / speedup(k); a request's solo-equivalent is its active speed times the
-// slowdown at its time-weighted mean k, interpolated linearly between whole
-// levels. It is NOT speed x k or the system rate, both of which count the
-// other streams' tokens as this request's.
+// alone. For a truly-solo request that is its measured speed. For a
+// contended one it is predicted from the solo population: a request's solo
+// speed is set by its context length (KV pressure) and its draft acceptance
+// rate (speculation), so the model is the median solo speed of the
+// truly-solo requests in the same context x acceptance cell, falling back
+// to the context row, then the global solo median. The prediction is
+// clamped to the request's own active speed: contention only slows a
+// decode, never speeds one up.
+//
+// The per-request contention itself is not observable — only the per-level
+// average is — so multiplying by the level factor (k / speedup(k),
+// interpolated between whole levels) attributes a request's deviation from
+// the column's typical contention to its intrinsic speed, which pushes the
+// column tails past the solo envelope. With fewer than MIN_SOLO_MODEL solo
+// requests the model is too sparse and that level factor is the fallback.
 //
 // Prefill of one slot runs in the same batches as decode of another, so that
 // time lands inside the other request's decode interval. The per-stream rate
@@ -46,6 +56,10 @@ export interface DecodeSample {
   speed: number;
   /** Client session id, "" or absent when the request carried none. */
   session?: string;
+  /** Input + cache tokens, for the solo-speed model. 0 when absent. */
+  context?: number;
+  /** Draft acceptance rate 0..1; -1 or absent when no draft data. */
+  accept?: number;
 }
 
 /** A stretch of wall clock with a constant set of running decodes. */
@@ -98,6 +112,10 @@ export interface ConcurrencyPoint {
   soloEquiv: number;
   /** The request's session id, "" when it carried none. */
   session: string;
+  /** Input + cache tokens, as reported (0 when absent). */
+  context: number;
+  /** Draft acceptance rate 0..1; -1 when the request carried no draft data. */
+  accept: number;
 }
 
 export interface ConcurrencyData {
@@ -196,6 +214,70 @@ function median(values: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+// --- Solo-speed model -------------------------------------------------------
+
+/** Context bin edges, in tokens. Bins are right-open at each edge. */
+const SOLO_CTX_EDGES = [10_000, 20_000, 40_000, 80_000, 120_000];
+/** Acceptance bin width; acceptance < 0 (no draft data) is its own bin. */
+const ACCEPT_BIN = 0.1;
+/**
+ * Solo requests needed before the model is fit. Below it the per-cell
+ * medians are noise and the level-slowdown fallback stands: fresh databases
+ * and the small datasets the tests use.
+ */
+const MIN_SOLO_MODEL = 50;
+/** Solo requests needed in a cell (or context row) before it is trusted. */
+const MIN_CELL = 10;
+
+function ctxBin(context: number): number {
+  let bin = 0;
+  while (bin < SOLO_CTX_EDGES.length && context >= SOLO_CTX_EDGES[bin]) bin++;
+  return bin;
+}
+
+function acceptBin(accept: number): number {
+  if (!(accept >= 0)) return -1;
+  return Math.min(9, Math.floor(accept / ACCEPT_BIN));
+}
+
+/**
+ * The solo population as a predictor: median solo speed per context x
+ * acceptance cell, per context row, and overall. null when the solo sample
+ * is too small to fit (see MIN_SOLO_MODEL).
+ */
+function fitSoloModel(points: ConcurrencyPoint[]): {
+  predict: (p: ConcurrencyPoint) => number;
+} | null {
+  const solo = points.filter((p) => p.meanK <= 1);
+  if (solo.length < MIN_SOLO_MODEL) return null;
+  const cell = new Map<string, number[]>();
+  const row = new Map<number, number[]>();
+  const all: number[] = [];
+  for (const p of solo) {
+    const push = (m: Map<string | number, number[]>, key: string | number) => {
+      const list = m.get(key) ?? [];
+      list.push(p.speed);
+      m.set(key, list);
+    };
+    push(cell, `${ctxBin(p.context)}:${acceptBin(p.accept)}`);
+    push(row, ctxBin(p.context));
+    all.push(p.speed);
+  }
+  const cellMedian = new Map([...cell].map(([key, values]) => [key, median(values)]));
+  const rowMedian = new Map([...row].map(([key, values]) => [key, median(values)]));
+  const allMedian = median(all);
+  return {
+    predict: (p: ConcurrencyPoint) => {
+      const c = ctxBin(p.context);
+      const inCell = cell.get(`${c}:${acceptBin(p.accept)}`) ?? [];
+      if (inCell.length >= MIN_CELL) return cellMedian.get(`${c}:${acceptBin(p.accept)}`) ?? allMedian;
+      const inRow = row.get(c) ?? [];
+      if (inRow.length >= MIN_CELL) return rowMedian.get(c) ?? allMedian;
+      return allMedian;
+    },
+  };
+}
+
 interface Span {
   start: number;
   end: number;
@@ -211,6 +293,10 @@ interface Span {
   index: number;
   /** The sample's session id, "" when it carried none. */
   session: string;
+  /** Input + cache tokens, 0 when the sample carried none. */
+  context: number;
+  /** Draft acceptance rate 0..1; -1 when the sample carried no draft data. */
+  accept: number;
 }
 
 export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
@@ -241,6 +327,8 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
       sysTokens: 0,
       index,
       session: s.session ?? "",
+      context: s.context ?? 0,
+      accept: s.accept ?? -1,
     });
   }
   if (spans.length === 0) return { ...EMPTY, systemSpeeds, soloSpeeds, untimed };
@@ -304,6 +392,8 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
       speed: sp.speed,
       soloEquiv: sp.speed,
       session: sp.session,
+      context: sp.context,
+      accept: sp.accept,
     };
   });
 
@@ -344,11 +434,24 @@ export function buildConcurrency(samples: DecodeSample[]): ConcurrencyData {
     });
   }
 
-  // Solo-equivalent needs the levels, so it is a second pass over the points.
+  // Solo-equivalent, second pass: a solo point keeps its measured speed; a
+  // contended point is the model's prediction for it (clamped to its own
+  // active speed: contention only slows a decode), or the level-slowdown
+  // factor when the model is not fit.
+  const model = fitSoloModel(points);
   points.forEach((p, i) => {
-    const factor = soloTrusted ? slowdownAt(p.meanK, slowdownByK) : NaN;
-    if (Number.isFinite(factor)) p.soloEquiv = p.speed * factor;
-    soloSpeeds[spans[i].index] = p.soloEquiv;
+    let solo: number;
+    if (p.meanK <= 1) {
+      solo = p.speed;
+    } else if (model) {
+      const pred = model.predict(p);
+      solo = Number.isFinite(pred) ? Math.max(pred, p.speed) : p.speed;
+    } else {
+      const factor = soloTrusted ? slowdownAt(p.meanK, slowdownByK) : NaN;
+      solo = Number.isFinite(factor) ? p.speed * factor : p.speed;
+    }
+    p.soloEquiv = solo;
+    soloSpeeds[spans[i].index] = solo;
   });
 
   return {

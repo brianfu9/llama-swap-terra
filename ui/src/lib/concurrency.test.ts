@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { DecodeSample } from "./concurrency";
 import { activeDecodeMs, buildConcurrency, MIN_LEVEL_BUSY_MS, slowdownAt } from "./concurrency";
 
 // A decode of `output` tokens at `speed` tok/s that finished at endMs.
@@ -199,5 +200,50 @@ describe("buildConcurrency", () => {
     // Untimed samples stay NaN.
     data = buildConcurrency([{ endMs: 0, decodeMs: -1, output: 10, speed: 33 }]);
     expect(data.soloSpeeds[0]).toBeNaN();
+  });
+
+  it("predicts a contended request's solo speed from same-cell solo requests", () => {
+    // 60 truly-solo requests: 30 at 100 tok/s with (50k ctx, 0.5 accept) and
+    // 30 at 150 tok/s with (50k ctx, 0.8 accept), staggered so none overlap.
+    const samples: DecodeSample[] = [];
+    for (let i = 0; i < 30; i++) {
+      const t = 1_000_000 + i * 3000;
+      samples.push({ endMs: t, decodeMs: 1000, output: 100, speed: 100, context: 50_000, accept: 0.5 });
+      samples.push({ endMs: t + 1500, decodeMs: 1000, output: 150, speed: 150, context: 50_000, accept: 0.8 });
+    }
+    // X ran k=2 at 100 tok/s in the 0.8-accept cell: the model gives it the
+    // cell's solo median (150), not its raw speed nor any level factor.
+    samples.push({ endMs: 10_000, decodeMs: 10_000, output: 1000, speed: 100, context: 50_000, accept: 0.8 });
+    // P sat beside X at 50 tok/s in the 0.5 cell: pulled up to its cell's
+    // solo median (100).
+    samples.push({ endMs: 10_000, decodeMs: 10_000, output: 500, speed: 50, context: 50_000, accept: 0.5 });
+    // Y decoded faster than its cell's solo median (120 > 100): the clamp
+    // keeps it at its own active speed.
+    samples.push({ endMs: 20_000, decodeMs: 10_000, output: 1200, speed: 120, context: 50_000, accept: 0.5 });
+    samples.push({ endMs: 20_000, decodeMs: 10_000, output: 800, speed: 80, context: 50_000, accept: 0.5 });
+    const data = buildConcurrency(samples);
+    const by = (speed: number, accept: number) =>
+      data.points.find((p) => p.speed === speed && p.accept === accept && p.meanK > 1);
+    expect(by(100, 0.8)?.soloEquiv).toBeCloseTo(150, 6);
+    expect(by(50, 0.5)?.soloEquiv).toBeCloseTo(100, 6);
+    expect(by(120, 0.5)?.soloEquiv).toBe(120);
+    expect(by(80, 0.5)?.soloEquiv).toBeCloseTo(100, 6);
+    // Solo points keep their measured speed.
+    for (const p of data.points) if (p.meanK <= 1) expect(p.soloEquiv).toBe(p.speed);
+  });
+
+  it("falls back to the level factor when the solo sample is too small", () => {
+    // 49 solo requests (one short of MIN_SOLO_MODEL) at 100 tok/s, then a
+    // 60s k=2 window at 100 + 50: speedup 1.5, slowdown(2) = 2 / 1.5 = 8/6.
+    const samples: DecodeSample[] = [];
+    for (let i = 0; i < 49; i++) {
+      const start = 1_000_000 + i * 5000;
+      samples.push({ endMs: start + 2000, decodeMs: 2000, output: 200, speed: 100, context: 50_000, accept: 0.5 });
+    }
+    samples.push({ endMs: 60_000, decodeMs: 60_000, output: 6000, speed: 100, context: 50_000, accept: 0.8 });
+    samples.push({ endMs: 60_000, decodeMs: 60_000, output: 3000, speed: 50, context: 50_000, accept: 0.5 });
+    const data = buildConcurrency(samples);
+    const x = data.points.find((p) => p.speed === 100 && p.accept === 0.8)!;
+    expect(x.soloEquiv).toBeCloseTo(100 * (8 / 6), 6);
   });
 });

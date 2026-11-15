@@ -49,17 +49,21 @@
         output: p.output,
         speed: p.speed,
         session: p.session,
+        context: p.context,
+        accept: p.accept,
       })),
     ),
   );
 
   // Which speed the decode charts plot. "solo" replaces each request's
   // reported speed with its solo-equivalent (lib/concurrency soloSpeeds):
-  // its active speed times the measured per-stream slowdown at its
-  // concurrency. Requests with no decode timing keep their reported speed.
+  // solo requests keep their measured speed; contended requests get the
+  // solo-speed model's prediction (solo requests with similar context and
+  // draft acceptance). Requests with no decode timing keep their reported
+  // speed.
   const decodeSpeedMode = persistentStore<"request" | "solo">("activity-decode-speed-mode", "request");
   const SOLO_TITLE =
-    "Estimated tok/s had this request run alone: its speed x the measured per-stream slowdown at its concurrency.";
+    "Estimated tok/s had this request run alone: solo requests as measured; contended ones predicted from solo requests with similar context and draft acceptance.";
   const genPoints = $derived.by(() => {
     const points = stats?.gen_scatter ?? [];
     if ($decodeSpeedMode !== "solo") return points;
