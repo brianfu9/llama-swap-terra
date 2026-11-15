@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { Chart, ScatterController, PointElement, LineElement, LinearScale, Title, Tooltip } from "chart.js";
   import type { TooltipItem } from "chart.js";
-  import type { ConcurrencyData, ConcurrencyLevel, ConcurrencyPoint } from "../lib/concurrency";
+  import type { ConcurrencyData, ConcurrencyLevel } from "../lib/concurrency";
   import { isDarkMode } from "../stores/theme";
   import * as Card from "$lib/components/ui/card/index.js";
   import { formatCompact } from "../lib/format";
@@ -127,16 +127,6 @@
     return dataset.levels?.[item.dataIndex];
   }
 
-  function cellOf(item: TooltipItem<"scatter">): HeatCell | undefined {
-    const dataset = item.dataset as unknown as { cells?: HeatCell[] };
-    return dataset.cells?.[item.dataIndex];
-  }
-
-  function overlayPointOf(item: TooltipItem<"scatter">): ConcurrencyPoint | undefined {
-    const dataset = item.dataset as unknown as { sourcePoints?: ConcurrencyPoint[] };
-    return dataset.sourcePoints?.[item.dataIndex];
-  }
-
   function sessionLineOf(item: TooltipItem<"scatter">): { k: number; systemTps: number } | undefined {
     const dataset = item.dataset as unknown as { sessionLine?: { k: number; systemTps: number }[] };
     return dataset.sessionLine?.[item.dataIndex];
@@ -169,27 +159,20 @@
           bodyColor: colors.tooltipText,
           borderColor: colors.tooltipBorder,
           borderWidth: 1,
+          // Only the two system lines explain themselves; the density cells
+          // and the latest session's dots are drawn, not hoverable.
+          filter: (item: TooltipItem<"scatter">) =>
+            levelOf(item) !== undefined || sessionLineOf(item) !== undefined,
           callbacks: {
             title: (items: TooltipItem<"scatter">[]) => {
               const item = items[0];
               if (!item) return "";
-              const point = overlayPointOf(item);
-              if (point) return `latest session ${shortSession(point.session)}`;
               const sl = sessionLineOf(item);
               if (sl) return `latest session ${shortSession(latest)}`;
               const level = levelOf(item);
-              if (level) return `${level.k} decoding at once`;
-              const cell = cellOf(item);
-              return cell ? `k ≈ ${cell.cx}` : "";
+              return level ? `${level.k} decoding at once` : "";
             },
             label: (item: TooltipItem<"scatter">) => {
-              const point = overlayPointOf(item);
-              if (point) {
-                return [
-                  `${formatCompact(speedOf(point))} tok/s ${solo ? "solo-equivalent" : "per stream"}`,
-                  `mean concurrency k ≈ ${point.meanK.toFixed(1)}`,
-                ];
-              }
               const sl = sessionLineOf(item);
               if (sl) {
                 return `system: ${formatCompact(sl.systemTps)} tok/s while this session's requests ran at k = ${sl.k}`;
@@ -206,10 +189,6 @@
                   `busy: ${busyLabel(level.busyMs)} (${(level.share * 100).toFixed(1)}%) · ${level.requests} req`,
                 );
                 return lines;
-              }
-              const cell = cellOf(item);
-              if (cell) {
-                return `${formatCompact(cell.y0)}–${formatCompact(cell.y1)} tok/s ${solo ? "solo-equivalent" : "per stream"}: ${cell.count} req`;
               }
               return "";
             },
@@ -251,7 +230,7 @@
     const levels = data.levels;
     const datasets: unknown[] = [
       {
-        // Invisible hit targets for the cells heatmapPlugin paints.
+        // Invisible anchors the heatmapPlugin paints its cells at.
         label: "Requests",
         data: heat.cells.map((cell) => ({ x: cell.cx, y: cell.cy })),
         cells: heat.cells,
@@ -292,11 +271,10 @@
         label: `latest session ${shortSession(latest)}`,
         // Placed at each request's true mean k, inside its rounded column.
         data: overlay.map((p) => ({ x: p.meanK, y: speedOf(p) })),
-        sourcePoints: overlay,
         backgroundColor: colors.latest,
         borderWidth: 0,
         pointRadius: 2.5,
-        pointHoverRadius: 5,
+        pointHoverRadius: 0,
       });
     }
     return { datasets };
