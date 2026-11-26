@@ -45,6 +45,15 @@ export function reserveTokens(r: QueueRequest): number {
   return Math.max(0, (r.admit_tokens ?? 0) - r.kv_tokens);
 }
 
+// The output room the gate counts for a request: --admit-kv-reserve, but no
+// more output than the request may still generate (radiance's gate_blocks).
+// While prefilling, the reserve column's gap is prompt-left + this.
+export function outputRoom(r: QueueRequest, kvReserve: number): number {
+  if (kvReserve <= 0) return 0;
+  if (r.max <= 0) return kvReserve;
+  return Math.max(0, Math.min(kvReserve, r.max - r.output));
+}
+
 export function kvLayout(s: QueueSnapshot): KVLayout {
   const total = Math.max(1, s.kv_tokens_total);
   const segments: KVSegment[] = [];
@@ -79,7 +88,7 @@ export function backfillLeftS(r: QueueRequest, backfillMs: number, heldS = r.hel
 
 export interface WaitReason {
   label: string; // short badge text
-  detail: string; // one line of why
+  detail: string; // only what no other column says (needs, room, waited are all in their own columns)
   tone: "hold" | "blocked" | "pending" | "info";
 }
 
@@ -89,32 +98,33 @@ export function waitReason(
   backfillMs: number,
   heldS = r.held_s
 ): WaitReason {
-  const need = r.admit_tokens ?? 0;
   switch (r.wait) {
     case "kv_hold": {
       const left = backfillLeftS(r, backfillMs, heldS);
-      const short = Math.max(0, need - layout.room);
-      const head = `needs ${formatTokens(need)}, ${formatTokens(layout.room)} free (short ${formatTokens(short)})`;
-      if (left !== null && left > 0)
-        return { label: "Held for KV", detail: `${head}; smaller requests may pass for ${left.toFixed(0)}s`, tone: "hold" };
-      return { label: "Held for KV", detail: `${head}; holding the line until running requests finish`, tone: "blocked" };
+      const short = Math.max(0, (r.admit_tokens ?? 0) - layout.room);
+      const parts: string[] = [];
+      if (short > 0) parts.push(`short ${formatTokens(short)}`);
+      if (left !== null && left > 0) {
+        // The countdown bar shows the fraction of the backfill window; this
+        // is the number it stands for.
+        parts.push(`${left.toFixed(0)}s backfill left`);
+        return { label: "Held for KV", detail: parts.join(" · "), tone: "hold" };
+      }
+      parts.push("holds the line");
+      return { label: "Held for KV", detail: parts.join(" · "), tone: "blocked" };
     }
     case "behind":
-      return { label: "Behind", detail: "waits behind a held request at the front of the line", tone: "blocked" };
+      return { label: "Behind", detail: "held request ahead", tone: "blocked" };
     case "kv_room":
       return {
         label: r.state === "preempted" ? "Preempted" : "KV room",
-        detail: "waits for room to recompute its whole context",
+        detail: "recomputes its context",
         tone: "blocked",
       };
     case "media":
-      return { label: "Encoding", detail: "its images or audio are being encoded", tone: "info" };
+      return { label: "Encoding", detail: "", tone: "info" };
     default:
-      return {
-        label: "Next step",
-        detail: need > 0 && need > layout.room ? "not reached yet; will be checked for KV room" : "admitted at the next scheduler step",
-        tone: "pending",
-      };
+      return { label: "Next step", detail: "", tone: "pending" };
   }
 }
 
@@ -164,4 +174,33 @@ export class SlotAssigner {
 
 export function requestKey(model: string, r: QueueRequest): string {
   return `${model}#${r.id}`;
+}
+
+// A row's displayed age must never run backwards. It re-baselines to the
+// engine's age_s on every once-a-second snapshot, and that stamp lags the
+// browser's processing of the event by a variable few-ms-to-hundreds-of-ms
+// (network + main-thread delay), so the re-baseline can land behind where the
+// row's own tick has already counted: the timer stutters and occasionally
+// drops. The engine measures age from a one-time arrival stamp (radiance's
+// scheduler sets arrived_us at request creation and keeps it across
+// preemption), so a row's true age only grows: remember the largest value
+// shown per key and never display less.
+export class AgeRatchet {
+  /** A drop this far below the last shown value is a new request reusing the
+   * key (an engine restart), not jitter. */
+  static readonly resetS = 2;
+  private shown = new Map<string, number>();
+
+  /** Forget keys that left the snapshot so they may be reused. */
+  prune(keys: string[]): void {
+    const live = new Set(keys);
+    for (const k of [...this.shown.keys()]) if (!live.has(k)) this.shown.delete(k);
+  }
+
+  age(key: string, serverAge: number): number {
+    const prev = this.shown.get(key);
+    const v = prev === undefined || serverAge < prev - AgeRatchet.resetS ? serverAge : Math.max(prev, serverAge);
+    if (v !== prev) this.shown.set(key, v);
+    return v;
+  }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { QueueRequest, QueueSnapshot } from "./types";
 import {
+  AgeRatchet,
   SlotAssigner,
   backfillLeftS,
   effectivePriority,
@@ -8,6 +9,7 @@ import {
   formatTokens,
   kvLayout,
   kvTicks,
+  outputRoom,
   runningRequests,
   waitReason,
   waitingRequests,
@@ -77,16 +79,39 @@ describe("queue order and reasons", () => {
   it("explains a held request inside and past its backfill window", () => {
     const head = waitingRequests(s)[0];
     expect(backfillLeftS(head, 60000)).toBe(40);
-    expect(waitReason(head, l, 60000).detail).toBe(
-      "needs 120k, 84k free (short 36k); smaller requests may pass for 40s"
-    );
-    expect(waitReason(head, l, 60000, 75).tone).toBe("blocked");
-    expect(waitReason(waitingRequests(s)[1], l, 60000).label).toBe("Behind");
+    // needs and room live in the Needs column and the model header, so the
+    // detail only adds what is short and how long backfill still passes.
+    expect(waitReason(head, l, 60000)).toEqual({
+      label: "Held for KV",
+      detail: "short 36k · 40s backfill left",
+      tone: "hold",
+    });
+    expect(waitReason(head, l, 60000, 75)).toEqual({
+      label: "Held for KV",
+      detail: "short 36k · holds the line",
+      tone: "blocked",
+    });
+    expect(waitReason(waitingRequests(s)[1], l, 60000)).toEqual({
+      label: "Behind",
+      detail: "held request ahead",
+      tone: "blocked",
+    });
   });
 
   it("ages priority by waited seconds", () => {
     expect(effectivePriority(req({ priority: 2, age_s: 45 }), 30)).toBeCloseTo(3.5);
     expect(effectivePriority(req({ priority: 2, age_s: 45 }), 0)).toBe(2);
+  });
+});
+
+describe("gate room", () => {
+  it("caps the output room at --admit-kv-reserve, at what is left, or at the reserve", () => {
+    // min(kv_reserve, max - output), per radiance's gate_blocks
+    expect(outputRoom(req({ prompt: 100_000, computed: 8_000, output: 0, max: 32_768 }), 16_384)).toBe(16_384);
+    expect(outputRoom(req({ output: 30_000, max: 32_768 }), 16_384)).toBe(2_768);
+    // max unset: the full reserve; gate off: nothing
+    expect(outputRoom(req({ max: 0 }), 16_384)).toBe(16_384);
+    expect(outputRoom(req({}), 0)).toBe(0);
   });
 });
 
@@ -98,6 +123,43 @@ describe("SlotAssigner", () => {
     expect(next.get("y")).toBe(1);
     expect(next.get("z")).toBe(2);
     expect(next.get("w")).toBe(0);
+  });
+});
+
+describe("AgeRatchet", () => {
+  it("holds a row at its highest shown value across a stale re-baseline", () => {
+    const r = new AgeRatchet();
+    expect(r.age("rad#1", 0)).toBe(0);
+    // the row's tick has counted up to 1; a snapshot stamped before that must
+    // not pull the displayed timer backwards
+    expect(r.age("rad#1", 1)).toBe(1);
+    expect(r.age("rad#1", 0.85)).toBe(1);
+    expect(r.age("rad#1", 0.9)).toBe(1);
+    // a genuinely newer snapshot still advances it
+    expect(r.age("rad#1", 2)).toBe(2);
+  });
+
+  it("accepts a drop past the margin as a fresh request reusing the key", () => {
+    const r = new AgeRatchet();
+    expect(r.age("rad#1", 10)).toBe(10);
+    expect(r.age("rad#1", 8.1)).toBe(10); // within 2 s: jitter
+    expect(r.age("rad#1", 0.5)).toBe(0.5); // an engine restart's id reuse
+    expect(r.age("rad#1", 1.2)).toBe(1.2); // ticks forward from there, not back to 10
+  });
+
+  it("prune forgets keys that left so they can be reused fresh", () => {
+    const r = new AgeRatchet();
+    expect(r.age("rad#1", 5)).toBe(5);
+    r.prune(["rad#2"]);
+    expect(r.age("rad#1", 0.2)).toBe(0.2);
+  });
+
+  it("keeps a row's age and hold time on independent keys", () => {
+    const r = new AgeRatchet();
+    expect(r.age("rad#1", 3)).toBe(3);
+    expect(r.age("h:rad#1", 1)).toBe(1);
+    expect(r.age("rad#1", 3.1)).toBe(3.1);
+    expect(r.age("h:rad#1", 0.9)).toBe(1);
   });
 });
 

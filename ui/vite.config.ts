@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, type Plugin } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { compression } from "vite-plugin-compression2";
@@ -45,9 +45,14 @@ export default defineConfig({
   ],
   base: "/ui/",
   resolve: {
-    alias: {
-      $lib: path.resolve(__dirname, "./src/lib"),
-    },
+    alias: [
+      { find: "$lib", replacement: path.resolve(__dirname, "./src/lib") },
+      // The bare `svelte` specifier's exports map hands Node (and vitest) the
+      // server entry, where mount() does not exist. The component tests mount
+      // real UI, which needs the client entry, so pin the bare specifier there.
+      // The regex is exact: a prefix alias would also rewrite `svelte/internal`.
+      { find: /^svelte$/, replacement: path.resolve(__dirname, "node_modules/svelte/src/index-client.js") },
+    ],
   },
   build: {
     outDir: "../internal/server/ui_dist",
@@ -55,6 +60,9 @@ export default defineConfig({
     // The playground chunk (markdown/KaTeX/highlight.js) is deferred and
     // loaded only after initial mount, so its size doesn't affect first paint.
     chunkSizeWarningLimit: 700,
+  },
+  test: {
+    environment: "happy-dom",
   },
   server: {
     // yes very insecure but who's running this thing

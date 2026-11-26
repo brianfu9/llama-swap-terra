@@ -67,11 +67,11 @@
   <div class="text-muted-foreground mb-1 flex items-center gap-2 text-xs">
     {#if media.kind === "image"}<ImageIcon class="size-3.5" />{:else}<VideoIcon class="size-3.5" />{/if}
     <span class="text-foreground font-medium">{label}</span>
-    {#if detail}<span class="truncate">{detail}</span>{/if}
+    {#if detail}<span class="min-w-0 truncate">{detail}</span>{/if}
     {#if media.sources?.length}<span class="shrink-0">from {media.sources.join(", ")}</span>{/if}
   </div>
   {#if media.prompt}
-    <p class="text-muted-foreground mb-2 line-clamp-3 text-sm">{media.prompt}</p>
+    <p class="text-muted-foreground mb-2 line-clamp-3 text-sm wrap-anywhere">{media.prompt}</p>
   {/if}
 
   {#if media.status === "running"}
@@ -80,7 +80,7 @@
       {media.jobId ? "Generating on the server. You can lock the phone." : "Starting..."}
     </div>
   {:else if media.status === "error"}
-    <p class="text-destructive text-sm">{media.error ?? "The generation failed."}</p>
+    <p class="text-destructive text-sm wrap-anywhere">{media.error ?? "The generation failed."}</p>
   {:else if media.status === "cancelled"}
     <p class="text-muted-foreground text-sm">Cancelled.</p>
   {:else if missing && urls.length === 0}

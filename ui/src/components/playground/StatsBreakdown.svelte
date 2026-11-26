@@ -22,7 +22,8 @@
   interface Row {
     kind: PhaseKind;
     phase: PhaseStats;
-    /** Tokens the throughput was measured over, when not all of them. */
+    /** Tokens the backend actually computed, when not all of the phase's tokens.
+     *  Its own column; also the basis for the speed and per-token values. */
     processed?: number;
   }
 
@@ -102,6 +103,7 @@
       <tr class="text-right">
         <th class="text-left font-normal"></th>
         <th class="font-medium" title={DETAIL_TOOLTIP.columnTokens}>tokens</th>
+        <th class="font-medium" title={DETAIL_TOOLTIP.columnProcessed}>processed</th>
         <th class="font-medium" title={DETAIL_TOOLTIP.columnTime}>time</th>
         <th class="font-medium" title={DETAIL_TOOLTIP.columnSpeed}>speed</th>
         <th class="font-medium" title={DETAIL_TOOLTIP.columnPerToken}>per token</th>
@@ -113,9 +115,9 @@
           <td class="text-left font-medium" title={PHASE_TOOLTIP[row.kind]}>{PHASE_LABEL[row.kind]}</td>
           <td title={phaseValueTooltip(row.kind, "tokens", row.phase)}>
             {tokens(row.phase.tokens, row.phase.approxTokens)}
-            {#if row.processed !== undefined}
-              <span class="opacity-70" title="Prompt tokens that were not in the cache and had to be processed.">({row.processed.toLocaleString()} new)</span>
-            {/if}
+          </td>
+          <td title={phaseValueTooltip(row.kind, "processed", row.phase)}>
+            {tokens(row.processed, false)}
           </td>
           <td title={phaseValueTooltip(row.kind, "time", row.phase)}>{time(row.phase.ms)}</td>
           <td title={phaseValueTooltip(row.kind, "speed", row.phase)}>{speed(row)}</td>

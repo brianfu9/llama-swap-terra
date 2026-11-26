@@ -1,16 +1,19 @@
 <script lang="ts">
-  // The request queue (terra fork, patch 33). Replaces the in-flight table on
-  // the Activity page: for an upstream that publishes its scheduler (Radiance
-  // /stats, polled by queuepoll.go) it draws the KV pool and who holds it, the
-  // running batch and the waiting line with the reason each request waits.
-  // Rows join llama-swap's in-flight entries by the X-Request-Tag rad echoes,
-  // so session, client and cancel work as before. In-flight requests with no
-  // scheduler row (other models, a model still loading) stay listed below.
+  // The request queue (terra fork, patch 33; column picker and drag-to-reorder
+  // added in patch 34). Replaces the in-flight table on the Activity page: for
+  // an upstream that publishes its scheduler (Radiance /stats, polled by
+  // queuepoll.go) it draws the KV pool and who holds it, the running batch and
+  // the waiting line with the reason each request waits. Rows join llama-swap's
+  // in-flight entries by the X-Request-Tag rad echoes, so session, client and
+  // cancel work as before. In-flight requests with no scheduler row (other
+  // models, a model still loading) stay listed below.
+  import { flip } from "svelte/animate";
   import type { InflightRequestEntry, QueueRequest, QueueSnapshot } from "../lib/types";
   import { cancelInflightRequest, queueSnapshots, uiConfig } from "../stores/api";
   import { persistentStore } from "../stores/persistent";
   import { formatBytes, liveElapsedMs, requestHeader, sessionID } from "../lib/inflight";
   import {
+    AgeRatchet,
     SlotAssigner,
     backfillLeftS,
     effectivePriority,
@@ -18,6 +21,7 @@
     formatTokens,
     kvLayout,
     kvTicks,
+    outputRoom,
     reserveTokens,
     requestKey,
     runningRequests,
@@ -27,10 +31,12 @@
     type KVSegment,
   } from "../lib/queueView";
   import * as Card from "$lib/components/ui/card/index.js";
+  import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import * as Table from "$lib/components/ui/table/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
-  import { ChevronDown, CircleX, X } from "@lucide/svelte";
+  import { ChevronDown, CircleX, Columns3, GripVertical, X } from "@lucide/svelte";
+  import { QueueColumnGroup, type QueueColumn } from "../lib/queueColumns.svelte.js";
   import MiddleEllipsis from "./activity-table/MiddleEllipsis.svelte";
   import ModelLink from "./activity-table/ModelLink.svelte";
 
@@ -41,6 +47,51 @@
 
   let { inflightRequests, storagePrefix = "activity" }: Props = $props();
 
+  // Column sets for the panel's three tables. All visible by default: the
+  // picker only changes what a user has hidden or moved, per storagePrefix.
+  const RUNNING_COLS: QueueColumn[] = [
+    { id: "id", label: "Running", defaultVisible: true },
+    { id: "session", label: "Session", defaultVisible: true },
+    { id: "client", label: "Client", defaultVisible: true },
+    { id: "state", label: "State", defaultVisible: true },
+    { id: "prio", label: "Prio", defaultVisible: true, right: true },
+    { id: "cached_context", label: "cache/kv", defaultVisible: true, right: true },
+    { id: "reserve", label: "Reserve", defaultVisible: true, right: true },
+    { id: "output", label: "Output", defaultVisible: true, right: true },
+    { id: "tps", label: "avg tok/s", defaultVisible: true, right: true },
+    { id: "ttft", label: "TTFT", defaultVisible: true, right: true },
+    { id: "age", label: "Age", defaultVisible: true, right: true },
+    { id: "cancel", label: "Cancel", defaultVisible: true },
+  ];
+  const WAITING_COLS: QueueColumn[] = [
+    { id: "id", label: "Waiting", defaultVisible: true },
+    { id: "session", label: "Session", defaultVisible: true },
+    { id: "client", label: "Client", defaultVisible: true },
+    { id: "prio", label: "Prio", defaultVisible: true, right: true },
+    { id: "needs", label: "Needs", defaultVisible: true },
+    { id: "waited", label: "Waited", defaultVisible: true, right: true },
+    { id: "why", label: "Why", defaultVisible: true },
+    { id: "cancel", label: "Cancel", defaultVisible: true },
+  ];
+  const OTHERS_COLS: QueueColumn[] = [
+    { id: "model", label: "Model", defaultVisible: true },
+    { id: "request", label: "Request", defaultVisible: true },
+    { id: "session", label: "Session", defaultVisible: true },
+    { id: "client", label: "Client", defaultVisible: true },
+    { id: "received", label: "Received", defaultVisible: true, right: true },
+    { id: "elapsed", label: "Elapsed", defaultVisible: true, right: true },
+    { id: "cancel", label: "Cancel", defaultVisible: true },
+  ];
+
+  // One picker for the whole panel: one section per table. The prefix is
+  // fixed for the panel's life, so capturing it here is intentional.
+  // svelte-ignore state_referenced_locally
+  const runningCols = new QueueColumnGroup(storagePrefix, "running", "Running", RUNNING_COLS);
+  // svelte-ignore state_referenced_locally
+  const waitingCols = new QueueColumnGroup(storagePrefix, "waiting", "Waiting", WAITING_COLS);
+  // svelte-ignore state_referenced_locally
+  const othersCols = new QueueColumnGroup(storagePrefix, "others", "Other in flight", OTHERS_COLS);
+
   // svelte-ignore state_referenced_locally
   const storedOpen = persistentStore<boolean>(`${storagePrefix}-queue-open`, true);
   let open = $state($storedOpen);
@@ -49,15 +100,40 @@
     storedOpen.set(v);
   }
 
-  // Ages and hold times tick between the once-a-second snapshots.
+  // Ages and hold times tick between the once-a-second snapshots. rAF, not a
+  // coarse interval: the displayed age must move every frame or the interval's
+  // quantum reads as stutter, and rAF pauses in a hidden tab for free.
   let nowMs = $state(performance.now());
   $effect(() => {
-    const t = setInterval(() => (nowMs = performance.now()), 250);
-    return () => clearInterval(t);
+    let raf = 0;
+    const tick = () => {
+      nowMs = performance.now();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
   });
   function sinceSnap(s: QueueSnapshot): number {
     return Math.max(0, (nowMs - (s.client_received_at_ms ?? nowMs)) / 1000);
   }
+
+  // A row's engine age only increases, but a snapshot re-baseline can land
+  // behind where the row's tick has already counted (its stamp lags the
+  // browser's event processing by a variable delay), which reads as the
+  // timer running backwards. The ratchet holds each row at its highest shown
+  // value. Keys: model#id for a scheduler row's age, "h:" for its hold time,
+  // "o:<inflight id>" for the others table.
+  const ages = new AgeRatchet();
+  $effect(() => {
+    const keys: string[] = [];
+    for (const s of $queueSnapshots)
+      for (const r of s.requests) {
+        const k = requestKey(s.model, r);
+        keys.push(k, `h:${k}`);
+      }
+    for (const e of inflightRequests) keys.push(`o:${e.id}`);
+    ages.prune(keys);
+  });
 
   // Four slots: rad batches at most four sequences (--max-num-seqs 4).
   const SLOTS = 4;
@@ -87,10 +163,15 @@
   function sessionOf(e: InflightRequestEntry | undefined): string {
     return e ? sessionID(e.req_headers, $uiConfig.activity.session_id) : "";
   }
+  // The short session name: tail with a leading ellipsis when truncated.
+  function shortSessionOf(e: InflightRequestEntry | undefined, fallback: string): string {
+    const sess = sessionOf(e);
+    if (!sess) return fallback;
+    return sess.length > 6 ? `…${sess.slice(-6)}` : sess;
+  }
   // The short name drawn on a bar segment: the session's tail, else the id.
   function shortName(r: QueueRequest): string {
-    const sess = sessionOf(entryOf(r));
-    return sess ? `…${sess.slice(-6)}` : `#${r.id}`;
+    return shortSessionOf(entryOf(r), `#${r.id}`);
   }
   function clientOf(e: InflightRequestEntry | undefined): string {
     if (!e) return "";
@@ -120,8 +201,15 @@
     switch (g.kind) {
       case "held":
         return `#${g.request!.id} ${shortName(g.request!)}: holds ${t} of context`;
-      case "reserve":
-        return `#${g.request!.id}: ${t} reserved for output (--admit-kv-reserve)`;
+      case "reserve": {
+        const r = g.request!;
+        // While prefilling the gap is the prompt still to compute, not just output.
+        if (r.state === "prefill") {
+          const left = Math.max(0, r.prompt - r.computed);
+          return `#${r.id} ${shortName(r)}: ${formatTokens(left)} of prompt to compute + ${formatTokens(Math.max(0, g.tokens - left))} output room`;
+        }
+        return `#${r.id}: ${t} reserved for output (--admit-kv-reserve)`;
+      }
       case "cache":
         return `prefix cache of finished turns: ${t}, evicted on demand`;
       default:
@@ -156,7 +244,7 @@
 </script>
 
 <Card.Root class="qp relative p-3">
-  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 pr-10 text-sm">
+  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 pr-16 text-sm">
     <span class="text-muted-foreground text-xs uppercase tracking-wider">Request Queue</span>
     <span><span class="font-semibold tabular-nums">{totalRunning}</span> running</span>
     <span><span class="font-semibold tabular-nums">{totalWaiting}</span> waiting</span>
@@ -164,7 +252,60 @@
       <span class="text-muted-foreground"><span class="font-semibold tabular-nums">{others.length}</span> other in flight</span>
     {/if}
   </div>
-  <div class="absolute right-2 top-2">
+  <div class="absolute right-2 top-2 flex items-center gap-1">
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger
+        class="text-muted-foreground hover:bg-muted inline-flex size-6 items-center justify-center rounded-full"
+        title="Select queue columns"
+      >
+        <Columns3 class="size-4" />
+      </DropdownMenu.Trigger>
+      <!-- 50vh, not 60vh: with every column visible the list is ~540px tall,
+           which doesn't fit either above or below the header trigger on a
+           normal viewport -- floating-ui then keeps re-fitting and the menu
+           flickers between positions. 50vh leaves the menu a stable fit. -->
+      <DropdownMenu.Content align="end" class="min-w-[18rem] max-h-[50vh] overflow-y-auto p-0">
+        <DropdownMenu.Label class="text-muted-foreground border-b px-3 py-2 text-xs font-medium uppercase tracking-wider">
+          Columns <span class="text-[10px] normal-case tracking-normal">(drag to reorder)</span>
+        </DropdownMenu.Label>
+        {#each [runningCols, waitingCols, othersCols] as g, gi (gi)}
+          {#if gi > 0}<DropdownMenu.Separator />{/if}
+          <!-- GroupHeading resolves its context against a surrounding Group;
+               without one it throws "Menu.Group | Menu.RadioGroup not found"
+               and the whole content render is aborted. -->
+          <DropdownMenu.Group>
+            <DropdownMenu.GroupHeading
+              class="text-muted-foreground bg-muted/50 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider"
+            >
+              {g.title}
+            </DropdownMenu.GroupHeading>
+            {#each g.order as colId (colId)}
+              <div
+                animate:flip={{ duration: 200 }}
+                draggable="true"
+                role="button"
+                tabindex="-1"
+                aria-label="Drag to reorder {g.label(colId)}"
+                ondragstart={(event) => g.onDragStart(event, colId)}
+                ondragover={(event) => g.onDragOver(event, colId)}
+                ondrop={(event) => g.onDrop(event)}
+                ondragend={() => g.onDragEnd()}
+                class={g.dragId === colId ? "opacity-40" : ""}
+              >
+                <DropdownMenu.CheckboxItem
+                  checked={g.visibility[colId] !== false}
+                  onCheckedChange={(visible) => g.toggle(colId, !!visible)}
+                  closeOnSelect={false}
+                >
+                  <GripVertical class="text-muted-foreground/50 size-4 cursor-grab active:cursor-grabbing" />
+                  <span class="flex-1">{g.label(colId)}</span>
+                </DropdownMenu.CheckboxItem>
+              </div>
+            {/each}
+          </DropdownMenu.Group>
+        {/each}
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
     <Button
       variant="ghost"
       size="icon-xs"
@@ -256,65 +397,79 @@
           <Table.Root class="min-w-full">
             <Table.Header>
               <Table.Row>
-                <Table.Head class={thClass}>Running</Table.Head>
-                <Table.Head class={thClass}>Session</Table.Head>
-                <Table.Head class={thClass}>Client</Table.Head>
-                <Table.Head class={thClass}>State</Table.Head>
-                <Table.Head class="{thClass} text-right">Prio</Table.Head>
-                <Table.Head class="{thClass} text-right">Context</Table.Head>
-                <Table.Head class="{thClass} text-right">Cached</Table.Head>
-                <Table.Head class="{thClass} text-right">Reserve</Table.Head>
-                <Table.Head class="{thClass} text-right">Output</Table.Head>
-                <Table.Head class="{thClass} text-right">tok/s</Table.Head>
-                <Table.Head class="{thClass} text-right">TTFT</Table.Head>
-                <Table.Head class="{thClass} text-right">Age</Table.Head>
-                <Table.Head class={thClass}></Table.Head>
+                {#each runningCols.visible as colId (colId)}
+                  <Table.Head class={runningCols.headerClass(colId, thClass)}>{runningCols.label(colId)}</Table.Head>
+                {/each}
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {#each running as r (r.id)}
                 {@const e = entryOf(r)}
                 {@const prefill = r.state === "prefill"}
+                {@const reserveGap = reserveTokens(r)}
+                {@const prefillLeft = Math.max(0, r.prompt - r.computed)}
                 <Table.Row>
-                  <Table.Cell class={tdClass}>
-                    <span class="inline-flex items-center gap-2">
-                      <span class="qp-key qp-held" style="--c: var(--q-s{slotOf(s, r) + 1})"></span>
-                      <span class="font-mono">#{r.id}</span>
-                    </span>
-                  </Table.Cell>
-                  <Table.Cell class={tdClass}><MiddleEllipsis value={sessionOf(e) || "—"} tailLength={8} className="max-w-[12rem] font-mono" /></Table.Cell>
-                  <Table.Cell class={tdClass}><MiddleEllipsis value={clientOf(e) || "—"} tailLength={8} className="max-w-[10rem]" /></Table.Cell>
-                  <Table.Cell class={tdClass}>
-                    {#if prefill}
-                      {@const done = r.prompt > 0 ? r.computed / r.prompt : 0}
-                      <span class="inline-flex items-center gap-2">
-                        <span class="qp-progress" style="--p: {(done * 100).toFixed(1)}%; --c: var(--q-s{slotOf(s, r) + 1})"></span>
-                        prefill {(done * 100).toFixed(0)}%
-                      </span>
-                    {:else}
-                      decode
+                  {#each runningCols.visible as colId (colId)}
+                    {#if colId === "id"}
+                      <Table.Cell class={tdClass}>
+                        <span class="inline-flex items-center gap-2">
+                          <span class="qp-key qp-held" style="--c: var(--q-s{slotOf(s, r) + 1})"></span>
+                          <span class="font-mono">#{r.id}</span>
+                        </span>
+                      </Table.Cell>
+                    {:else if colId === "session"}
+                      <Table.Cell class={tdClass}><span class="font-mono">{shortSessionOf(e, "—")}</span></Table.Cell>
+                    {:else if colId === "client"}
+                      <Table.Cell class={tdClass}><MiddleEllipsis value={clientOf(e) || "—"} tailLength={8} className="max-w-[10rem]" /></Table.Cell>
+                    {:else if colId === "state"}
+                      <Table.Cell class={tdClass}>
+                        {#if prefill}
+                          {@const done = r.prompt > 0 ? r.computed / r.prompt : 0}
+                          prefill {(done * 100).toFixed(0)}%
+                        {:else}
+                          decode
+                        {/if}
+                      </Table.Cell>
+                    {:else if colId === "prio"}
+                      <Table.Cell class="{tdClass} text-right tabular-nums">{r.priority}</Table.Cell>
+                    {:else if colId === "cached_context"}
+                      <Table.Cell class="{tdClass} text-right tabular-nums">{formatTokens(r.cached)}<span class="text-muted-foreground">/{formatTokens(r.kv_tokens)}</span></Table.Cell>
+                    {:else if colId === "reserve"}
+                      <Table.Cell class="{tdClass} text-right tabular-nums">
+                        {#if prefill && prefillLeft > 0 && reserveGap > 0}
+                          <!-- The gap is the uncomputed prompt, not output room: say which is which. -->
+                          <span title="the prompt still to compute, plus the gate's output room">
+                            prefill {formatTokens(prefillLeft)} + out {formatTokens(outputRoom(r, policy?.kv_reserve ?? 0))}
+                          </span>
+                        {:else if reserveGap > 0}
+                          {formatTokens(reserveGap)}
+                        {:else}
+                          —
+                        {/if}
+                      </Table.Cell>
+                    {:else if colId === "output"}
+                      <Table.Cell class="{tdClass} text-right tabular-nums">{formatTokens(r.output)}<span class="text-muted-foreground"> / {formatTokens(r.max)}</span></Table.Cell>
+                    {:else if colId === "tps"}
+                      <Table.Cell class="{tdClass} text-right tabular-nums">{r.tps > 0 ? r.tps.toFixed(1) : "—"}</Table.Cell>
+                    {:else if colId === "ttft"}
+                      <Table.Cell class="{tdClass} text-right tabular-nums">{r.ttft_s !== undefined ? fmtS(r.ttft_s) : "—"}</Table.Cell>
+                    {:else if colId === "age"}
+                      <Table.Cell class="{tdClass} text-right tabular-nums">{fmtS(ages.age(requestKey(s.model, r), r.age_s + dt))}</Table.Cell>
+                    {:else if colId === "cancel"}
+                      <Table.Cell class={tdClass}>
+                        {#if e}
+                          <Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive size-6"
+                                  onclick={() => cancel(e.id)} disabled={cancelling.includes(e.id)}
+                                  title="Cancel request" aria-label="Cancel request #{r.id}">
+                            <CircleX class="size-4" />
+                          </Button>
+                        {/if}
+                      </Table.Cell>
                     {/if}
-                  </Table.Cell>
-                  <Table.Cell class="{tdClass} text-right tabular-nums">{r.priority}</Table.Cell>
-                  <Table.Cell class="{tdClass} text-right tabular-nums">{formatTokens(r.kv_tokens)}</Table.Cell>
-                  <Table.Cell class="{tdClass} text-right tabular-nums text-muted-foreground">{formatTokens(r.cached)}</Table.Cell>
-                  <Table.Cell class="{tdClass} text-right tabular-nums">{reserveTokens(r) > 0 ? formatTokens(reserveTokens(r)) : "—"}</Table.Cell>
-                  <Table.Cell class="{tdClass} text-right tabular-nums">{formatTokens(r.output)}<span class="text-muted-foreground"> / {formatTokens(r.max)}</span></Table.Cell>
-                  <Table.Cell class="{tdClass} text-right tabular-nums">{r.tps > 0 ? r.tps.toFixed(1) : "—"}</Table.Cell>
-                  <Table.Cell class="{tdClass} text-right tabular-nums">{r.ttft_s !== undefined ? fmtS(r.ttft_s) : "—"}</Table.Cell>
-                  <Table.Cell class="{tdClass} text-right tabular-nums">{fmtS(r.age_s + dt)}</Table.Cell>
-                  <Table.Cell class={tdClass}>
-                    {#if e}
-                      <Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive size-6"
-                              onclick={() => cancel(e.id)} disabled={cancelling.includes(e.id)}
-                              title="Cancel request" aria-label="Cancel request #{r.id}">
-                        <CircleX class="size-4" />
-                      </Button>
-                    {/if}
-                  </Table.Cell>
+                  {/each}
                 </Table.Row>
               {:else}
-                <Table.Row><Table.Cell colspan={13} class="{tdClass} text-muted-foreground">Nothing running</Table.Cell></Table.Row>
+                <Table.Row><Table.Cell colspan={Math.max(runningCols.visible.length, 1)} class="{tdClass} text-muted-foreground">Nothing running</Table.Cell></Table.Row>
               {/each}
             </Table.Body>
           </Table.Root>
@@ -326,67 +481,75 @@
             <Table.Root class="min-w-full">
               <Table.Header>
                 <Table.Row>
-                  <Table.Head class={thClass}>Waiting</Table.Head>
-                  <Table.Head class={thClass}>Session</Table.Head>
-                  <Table.Head class={thClass}>Client</Table.Head>
-                  <Table.Head class="{thClass} text-right">Prio</Table.Head>
-                  <Table.Head class={thClass}>Needs</Table.Head>
-                  <Table.Head class="{thClass} text-right">Waited</Table.Head>
-                  <Table.Head class={thClass}>Why</Table.Head>
-                  <Table.Head class={thClass}></Table.Head>
+                  {#each waitingCols.visible as colId (colId)}
+                    <Table.Head class={waitingCols.headerClass(colId, thClass)}>{waitingCols.label(colId)}</Table.Head>
+                  {/each}
                 </Table.Row>
               </Table.Header>
               <Table.Body>
                 {#each waiting as r (r.id)}
                   {@const e = entryOf(r)}
-                  {@const age = r.age_s + dt}
-                  {@const held = r.held_s !== undefined ? r.held_s + dt : undefined}
+                  {@const age = ages.age(requestKey(s.model, r), r.age_s + dt)}
+                  {@const held = r.held_s !== undefined ? ages.age(`h:${requestKey(s.model, r)}`, r.held_s + dt) : undefined}
                   {@const why = waitReason(r, l, policy?.backfill_ms ?? 0, held)}
                   {@const need = r.admit_tokens ?? 0}
                   {@const left = backfillLeftS(r, policy?.backfill_ms ?? 0, held)}
                   <Table.Row>
-                    <Table.Cell class={tdClass}>
-                      <span class="font-mono"><span class="text-muted-foreground">{(r.queue_pos ?? 0) + 1}.</span> #{r.id}</span>
-                    </Table.Cell>
-                    <Table.Cell class={tdClass}><MiddleEllipsis value={sessionOf(e) || "—"} tailLength={8} className="max-w-[12rem] font-mono" /></Table.Cell>
-                    <Table.Cell class={tdClass}><MiddleEllipsis value={clientOf(e) || "—"} tailLength={8} className="max-w-[10rem]" /></Table.Cell>
-                    <Table.Cell class="{tdClass} text-right tabular-nums">
-                      {r.priority}
-                      {#if policy && policy.aging_s > 0}
-                        <span class="text-muted-foreground" title="priority + waited / {policy.aging_s}s"> → {effectivePriority(r, policy.aging_s, age).toFixed(1)}</span>
+                    {#each waitingCols.visible as colId (colId)}
+                      {#if colId === "id"}
+                        <Table.Cell class={tdClass}>
+                          <span class="font-mono"><span class="text-muted-foreground">{(r.queue_pos ?? 0) + 1}.</span> #{r.id}</span>
+                        </Table.Cell>
+                      {:else if colId === "session"}
+                        <Table.Cell class={tdClass}><span class="font-mono">{shortSessionOf(e, "—")}</span></Table.Cell>
+                      {:else if colId === "client"}
+                        <Table.Cell class={tdClass}><MiddleEllipsis value={clientOf(e) || "—"} tailLength={8} className="max-w-[10rem]" /></Table.Cell>
+                      {:else if colId === "prio"}
+                        <Table.Cell class="{tdClass} text-right tabular-nums">
+                          {r.priority}
+                          {#if policy && policy.aging_s > 0}
+                            <span class="text-muted-foreground" title="priority + waited / {policy.aging_s}s"> → {effectivePriority(r, policy.aging_s, age).toFixed(1)}</span>
+                          {/if}
+                        </Table.Cell>
+                      {:else if colId === "needs"}
+                        <Table.Cell class={tdClass}>
+                          {#if need > 0}
+                            <span class="inline-flex items-center gap-2 tabular-nums">
+                              <span class="qp-need" title="needs {formatTokens(need)}; the gate has {formatTokens(l.room)} free"
+                                    style="--n: {Math.min(100, pct(need, l.total)).toFixed(1)}%; --r: {pct(l.room, l.total).toFixed(1)}%"
+                                    class:qp-need-short={need > l.room}></span>
+                              {formatTokens(need)}
+                            </span>
+                          {:else}
+                            <span class="tabular-nums">{formatTokens(r.prompt)}</span>
+                          {/if}
+                        </Table.Cell>
+                      {:else if colId === "waited"}
+                        <Table.Cell class="{tdClass} text-right tabular-nums">{fmtS(age)}</Table.Cell>
+                      {:else if colId === "why"}
+                        <Table.Cell class="{tdClass} whitespace-normal">
+                          <span class="inline-flex flex-wrap items-center gap-2">
+                            <span class="rounded-full border px-2 py-px text-[11px] font-medium {toneClass[why.tone]}">{why.label}</span>
+                            {#if left !== null && left > 0}
+                              <span class="qp-countdown" style="--p: {(100 * left / ((policy?.backfill_ms ?? 1) / 1000)).toFixed(1)}%" title="backfill window left"></span>
+                            {/if}
+                            {#if why.detail}
+                              <span class="text-muted-foreground">{why.detail}</span>
+                            {/if}
+                          </span>
+                        </Table.Cell>
+                      {:else if colId === "cancel"}
+                        <Table.Cell class={tdClass}>
+                          {#if e}
+                            <Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive size-6"
+                                    onclick={() => cancel(e.id)} disabled={cancelling.includes(e.id)}
+                                    title="Cancel request" aria-label="Cancel request #{r.id}">
+                              <CircleX class="size-4" />
+                            </Button>
+                          {/if}
+                        </Table.Cell>
                       {/if}
-                    </Table.Cell>
-                    <Table.Cell class={tdClass}>
-                      {#if need > 0}
-                        <span class="inline-flex items-center gap-2 tabular-nums">
-                          <span class="qp-need" title="needs {formatTokens(need)}; the gate has {formatTokens(l.room)} free"
-                                style="--n: {Math.min(100, pct(need, l.total)).toFixed(1)}%; --r: {pct(l.room, l.total).toFixed(1)}%"
-                                class:qp-need-short={need > l.room}></span>
-                          {formatTokens(need)}
-                        </span>
-                      {:else}
-                        <span class="tabular-nums">{formatTokens(r.prompt)}</span>
-                      {/if}
-                    </Table.Cell>
-                    <Table.Cell class="{tdClass} text-right tabular-nums">{fmtS(age)}</Table.Cell>
-                    <Table.Cell class="{tdClass} whitespace-normal">
-                      <span class="inline-flex flex-wrap items-center gap-2">
-                        <span class="rounded-full border px-2 py-px text-[11px] font-medium {toneClass[why.tone]}">{why.label}</span>
-                        {#if left !== null && left > 0}
-                          <span class="qp-countdown" style="--p: {(100 * left / ((policy?.backfill_ms ?? 1) / 1000)).toFixed(1)}%" title="backfill window left"></span>
-                        {/if}
-                        <span class="text-muted-foreground">{why.detail}</span>
-                      </span>
-                    </Table.Cell>
-                    <Table.Cell class={tdClass}>
-                      {#if e}
-                        <Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive size-6"
-                                onclick={() => cancel(e.id)} disabled={cancelling.includes(e.id)}
-                                title="Cancel request" aria-label="Cancel request #{r.id}">
-                          <CircleX class="size-4" />
-                        </Button>
-                      {/if}
-                    </Table.Cell>
+                    {/each}
                   </Table.Row>
                 {/each}
               </Table.Body>
@@ -402,34 +565,40 @@
         <Table.Root class="min-w-full">
           <Table.Header>
             <Table.Row>
-              <Table.Head class={thClass}>{$queueSnapshots.length > 0 ? "Other in flight" : "In flight"}</Table.Head>
-              <Table.Head class={thClass}>Request</Table.Head>
-              <Table.Head class={thClass}>Session</Table.Head>
-              <Table.Head class={thClass}>Client</Table.Head>
-              <Table.Head class="{thClass} text-right">Received</Table.Head>
-              <Table.Head class="{thClass} text-right">Elapsed</Table.Head>
-              <Table.Head class={thClass}></Table.Head>
+              {#each othersCols.visible as colId (colId)}
+                <Table.Head class={othersCols.headerClass(colId, thClass)}>{othersCols.label(colId)}</Table.Head>
+              {/each}
             </Table.Row>
           </Table.Header>
           <Table.Body>
             {#each others as e (e.id)}
               <Table.Row>
-                <Table.Cell class={tdClass}><MiddleEllipsis value={e.model || "—"} tailLength={10} className="max-w-[14rem]" /></Table.Cell>
-                <Table.Cell class={tdClass}><MiddleEllipsis value={`${e.method} ${e.req_path}`} tailLength={14} className="max-w-[18rem] font-mono" /></Table.Cell>
-                <Table.Cell class={tdClass}><MiddleEllipsis value={sessionOf(e) || "—"} tailLength={8} className="max-w-[12rem] font-mono" /></Table.Cell>
-                <Table.Cell class={tdClass}><MiddleEllipsis value={clientOf(e) || "—"} tailLength={8} className="max-w-[10rem]" /></Table.Cell>
-                <Table.Cell class="{tdClass} text-right tabular-nums">{formatBytes(e.resp_bytes)}</Table.Cell>
-                <Table.Cell class="{tdClass} text-right tabular-nums">{fmtS(liveElapsedMs(e.elapsed_ms, e.client_received_at_ms, nowMs) / 1000)}</Table.Cell>
-                <Table.Cell class={tdClass}>
-                  <Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive size-6"
-                          onclick={() => cancel(e.id)} disabled={cancelling.includes(e.id)}
-                          title="Cancel request" aria-label="Cancel inflight request">
-                    <CircleX class="size-4" />
-                  </Button>
-                </Table.Cell>
+                {#each othersCols.visible as colId (colId)}
+                  {#if colId === "model"}
+                    <Table.Cell class={tdClass}><MiddleEllipsis value={e.model || "—"} tailLength={10} className="max-w-[14rem]" /></Table.Cell>
+                  {:else if colId === "request"}
+                    <Table.Cell class={tdClass}><MiddleEllipsis value={`${e.method} ${e.req_path}`} tailLength={14} className="max-w-[18rem] font-mono" /></Table.Cell>
+                  {:else if colId === "session"}
+                    <Table.Cell class={tdClass}><span class="font-mono">{shortSessionOf(e, "—")}</span></Table.Cell>
+                  {:else if colId === "client"}
+                    <Table.Cell class={tdClass}><MiddleEllipsis value={clientOf(e) || "—"} tailLength={8} className="max-w-[10rem]" /></Table.Cell>
+                  {:else if colId === "received"}
+                    <Table.Cell class="{tdClass} text-right tabular-nums">{formatBytes(e.resp_bytes)}</Table.Cell>
+                  {:else if colId === "elapsed"}
+                    <Table.Cell class="{tdClass} text-right tabular-nums">{fmtS(ages.age(`o:${e.id}`, liveElapsedMs(e.elapsed_ms, e.client_received_at_ms, nowMs) / 1000))}</Table.Cell>
+                  {:else if colId === "cancel"}
+                    <Table.Cell class={tdClass}>
+                      <Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive size-6"
+                              onclick={() => cancel(e.id)} disabled={cancelling.includes(e.id)}
+                              title="Cancel request" aria-label="Cancel inflight request">
+                        <CircleX class="size-4" />
+                      </Button>
+                    </Table.Cell>
+                  {/if}
+                {/each}
               </Table.Row>
             {:else}
-              <Table.Row><Table.Cell colspan={7} class="{tdClass} text-muted-foreground">No requests in flight</Table.Cell></Table.Row>
+              <Table.Row><Table.Cell colspan={Math.max(othersCols.visible.length, 1)} class="{tdClass} text-muted-foreground">No requests in flight</Table.Cell></Table.Row>
             {/each}
           </Table.Body>
         </Table.Root>
@@ -518,7 +687,6 @@
   .qp-key.qp-ghost {
     background: transparent;
   }
-  .qp-progress,
   .qp-need,
   .qp-countdown {
     position: relative;
@@ -527,17 +695,6 @@
     border-radius: 3px;
     background: var(--q-track);
     overflow: hidden;
-  }
-  .qp-progress {
-    width: 56px;
-  }
-  .qp-progress::after {
-    content: "";
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: var(--p);
-    background: var(--c);
-    border-radius: 3px;
   }
   /* Need against the whole pool, with a tick where the gate's room ends. */
   .qp-need {

@@ -3,7 +3,7 @@ import type { PhaseStats } from "./types";
 /** The phases a stats line can describe. */
 export type PhaseKind = "prompt" | "reasoning" | "response" | "generation";
 
-export type PhaseMetric = "tokens" | "time" | "speed" | "perToken";
+export type PhaseMetric = "tokens" | "processed" | "time" | "speed" | "perToken";
 
 export const PHASE_LABEL: Record<PhaseKind, string> = {
   prompt: "Prompt",
@@ -41,6 +41,10 @@ export function phaseValueTooltip(kind: PhaseKind, metric: PhaseMetric, phase: P
           return "Generated tokens: reasoning and response together." + (phase.approxTokens ? CHUNK_NOTE : "");
       }
       break;
+    case "processed":
+      return kind === "prompt"
+        ? "Processed prompt tokens: the part of the prompt the backend actually had to compute, not served from the cache. When nothing was cached the whole prompt counts as processed, so the column shows a dash."
+        : "The prompt row shows the prompt tokens the backend had to compute itself. Generated tokens are all computed, so the column shows a dash here.";
     case "time":
       switch (kind) {
         case "prompt":
@@ -94,6 +98,8 @@ export const DETAIL_TOOLTIP = {
   stop: "Why generation stopped: the model reached the end of its turn, hit the max_tokens limit, called a tool, or you cancelled it.",
   waiting: "Waiting for the first token: the request has been sent and the model has not produced anything yet.",
   columnTokens: "Token counts. A ~ marks an estimate; hover a value for how it was obtained.",
+  columnProcessed:
+    "Prompt tokens the backend actually had to compute (the prompt minus cache hits). A dash when nothing was cached, since then the whole prompt counts.",
   columnTime: "Time spent in each phase.",
   columnSpeed: "Tokens per second in each phase.",
   columnPerToken: "Average time per token in each phase.",
